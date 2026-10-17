@@ -6,7 +6,7 @@ Find the best speech clips in a large pool, then check them by ear:
    CPU models and shortlist the top N (default 200).
 2. **Review** (`build.py`): listen to the shortlist in a single local HTML page, mark each clip
    **good** or **bad**, and **trim** junk off the start or end.
-3. **Export** (`apply_picks.py`): write out the good clips, cut to your trims.
+3. **Export** (`apply_picks.py`): write out the good clips with your trims and cuts applied.
 
 Built for curating speech datasets (picking clean voice-cloning reference clips, spot-checking
 TTS/ASR data), but the reviewer works for any short audio.
@@ -76,11 +76,19 @@ python build.py path/to/clips --min-duration 2 --max-duration 15   # allowed kep
 | `↓` `J` / `↑` `K` | next / previous clip |
 | `R` | replay |
 | `[` / `]` | set trim start / end at the playhead |
-| `X` | undo trim |
+| `Delete` / `C` | cut the selected range out of the clip |
+| `S` | play just the selected range |
+| `Esc` | drop the selection |
+| `X` | undo all trims and cuts on the clip |
 
-- **Trimming:** drag the orange handles on a clip's waveform. Trimmed-off parts are shaded, and
-  playback only covers what you're keeping, so you hear exactly what will be exported.
-- **Allowed length:** what a clip keeps after trimming must be between `--min-duration` and
+- **Trimming the ends:** drag the orange handles on a clip's waveform. Trimmed-off parts are shaded.
+- **Cutting a gap out of the middle:** drag across the waveform (away from the orange handles) to
+  select a range, such as a long pause, adjust its blue edges if needed, then press `Delete` or `C`.
+  Cut ranges stay visible, crossed out; click one to restore it. On export the pieces are joined with
+  a 10 ms crossfade so the join doesn't click.
+- **Playback only covers what you're keeping**: it starts at the trim start, jumps over cuts and stops
+  at the trim end, so you hear exactly what will be exported.
+- **Allowed length:** what a clip keeps after trims and cuts must be between `--min-duration` and
   `--max-duration` (defaults **3 s** and **10 s**, the usual range for voice-cloning reference audio).
   - Too short, whether it started short or you trimmed it down: **marked bad automatically**, ✓ disabled.
     Extend the trim back past the minimum and the automatic "bad" is lifted (a "bad" you chose yourself stays).
@@ -94,7 +102,8 @@ python build.py path/to/clips --min-duration 2 --max-duration 15   # allowed kep
   merge a colleague's review, or carry progress over to a rebuilt page). Keys can be file paths or clip numbers.
 
 ```json
-{ "good": ["a.wav"], "bad": ["b.wav"], "unrated": ["c.wav"], "trims": { "a.wav": [0.52, 3.62] },
+{ "good": ["a.wav"], "bad": ["b.wav"], "unrated": ["c.wav"],
+  "trims": { "a.wav": [0.52, 4.62] }, "cuts": { "a.wav": [[1.9, 2.4]] },
   "min_duration": 3.0, "max_duration": 10.0 }
 ```
 
@@ -106,7 +115,7 @@ python apply_picks.py picks.json path/to/clips selected/ --include-unrated   # p
 ```
 
 Clips keep their relative paths and audio format; `selected/manifest.csv` records each clip's
-trim and final duration. Clips outside the allowed length after trimming are skipped (the limits
+trim, cuts and final duration. Clips outside the allowed length after trimming are skipped (the limits
 saved in `picks.json`, or `--min-duration` / `--max-duration`).
 
 ## Metadata file

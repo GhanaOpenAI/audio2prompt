@@ -9,12 +9,14 @@
     --bg: #f6f5f1; --surface: #ffffff; --ink: #1d1d1b; --muted: #6b6a64; --line: #e3e1da;
     --accent: #b5651d; --good: #2f7d4f; --good-bg: #e6f2ea; --bad: #b23b3b; --bad-bg: #f8e7e5;
     --active: #fff6e8; --chip: #efede6; --wave: #b9b6ab; --wave-in: #3d3c38; --cut: rgba(178, 59, 59, .10);
+    --sel: rgba(46, 108, 191, .18); --sel-edge: #2e6cbf;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --bg: #161614; --surface: #1f1f1c; --ink: #ecebe6; --muted: #9b998f; --line: #33322d;
       --accent: #e0954e; --good: #5fbf86; --good-bg: #1d3326; --bad: #e07a72; --bad-bg: #3a2220;
       --active: #2b2619; --chip: #2a2925; --wave: #4a4943; --wave-in: #d8d6cd; --cut: rgba(224, 122, 114, .12);
+      --sel: rgba(110, 160, 230, .22); --sel-edge: #79a8ec;
     }
   }
   * { box-sizing: border-box; }
@@ -80,7 +82,7 @@
 <header>
   <div class="top">
     <h1>__TITLE__</h1>
-    <span class="progress"><b id="rated">0</b> / <span id="total">0</span> rated · <b id="goodN">0</b> good · <b id="badN">0</b> bad · <b id="trimN">0</b> trimmed<span id="minNote"></span></span>
+    <span class="progress"><b id="rated">0</b> / <span id="total">0</span> rated · <b id="goodN">0</b> good · <b id="badN">0</b> bad · <b id="trimN">0</b> edited<span id="minNote"></span></span>
   </div>
   <div class="bar"><i id="barFill"></i></div>
   <div class="controls">
@@ -97,7 +99,9 @@
     <button class="btn primary" id="export">Download picks</button>
   </div>
   <div class="keys"><kbd>Space</kbd> play/pause · <kbd>G</kbd> good · <kbd>B</kbd> bad · <kbd>U</kbd> clear · <kbd>↓</kbd>/<kbd>J</kbd> next · <kbd>↑</kbd>/<kbd>K</kbd> previous · <kbd>R</kbd> replay ·
-    trim: drag the handles on the waveform, or <kbd>[</kbd> start / <kbd>]</kbd> end at the playhead, <kbd>X</kbd> undo trim · click the waveform to play from there</div>
+    trim ends: drag the orange handles, or <kbd>[</kbd> start / <kbd>]</kbd> end at the playhead ·
+    cut a gap: drag across the waveform to select it, then <kbd>Del</kbd>/<kbd>C</kbd> (<kbd>S</kbd> plays the selection, <kbd>Esc</kbd> drops it; click a cut to restore it) ·
+    <kbd>X</kbd> undo all trims and cuts · click the waveform to play from there</div>
 </header>
 <main id="list"></main>
 <audio id="player" preload="auto"></audio>
@@ -109,11 +113,12 @@ const MIN_DUR = __MIN_DURATION__;  // seconds; clips kept shorter than this are 
 const MAX_DUR = __MAX_DURATION__;  // seconds; clips kept longer than this must be cropped before they can pass (0 = no maximum)
 const STORE = "audio-clip-reviewer:" + __STORE_ID__;
 const load = k => { try { return JSON.parse(localStorage.getItem(STORE + k) || "{}"); } catch (e) { return {}; } };
-let ratings = load(":ratings"), trims = load(":trims"), autoBad = load(":autobad");
+let ratings = load(":ratings"), trims = load(":trims"), autoBad = load(":autobad"), cuts = load(":cuts");
+let sel = null;  // {file, a, b}: a range selected on the current clip, waiting to be cut
 const save = () => {
   try {
     localStorage.setItem(STORE + ":ratings", JSON.stringify(ratings)); localStorage.setItem(STORE + ":trims", JSON.stringify(trims));
-    localStorage.setItem(STORE + ":autobad", JSON.stringify(autoBad));
+    localStorage.setItem(STORE + ":autobad", JSON.stringify(autoBad)); localStorage.setItem(STORE + ":cuts", JSON.stringify(cuts));
   } catch (e) {}
 };
 
@@ -122,11 +127,18 @@ const list = document.getElementById("list"), player = document.getElementById("
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const trimOf = c => trims[c.file] || [0, c.dur];
 const fmt = s => s.toFixed(2) + "s";
-const kept = c => { const [s, e] = trimOf(c); return e - s; };
+const cutsOf = c => cuts[c.file] || [];
+// Seconds kept: the trim window minus any cut ranges inside it.
+const kept = c => {
+  const [s, e] = trimOf(c);
+  return cutsOf(c).reduce((k, [a, b]) => k - Math.max(0, Math.min(b, e) - Math.max(a, s)), e - s);
+};
+const edited = c => !!trims[c.file] || cutsOf(c).length > 0;
+const cutAt = (c, t) => cutsOf(c).find(([a, b]) => t >= a && t < b);
 const tooShort = c => MIN_DUR > 0 && kept(c) < MIN_DUR - 1e-6;
 const tooLong = c => MAX_DUR > 0 && kept(c) > MAX_DUR + 1e-6;
 const cantPass = c => tooShort(c) || tooLong(c);
-const whyNot = c => tooShort(c) ? `Too short (under ${fmt(MIN_DUR)})` : `Too long: crop to ${fmt(MAX_DUR)} or less first`;
+const whyNot = c => tooShort(c) ? `Too short (under ${fmt(MIN_DUR)})` : `Too long: trim or cut it to ${fmt(MAX_DUR)} or less first`;
 // Too-short clips are marked bad automatically; if a trim later makes them long enough again,
 // only that automatic "bad" is lifted (a "bad" you chose yourself stays).
 function enforce(c) {
@@ -146,12 +158,15 @@ const esc = s => String(s ?? "").replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": 
 if (!CLIPS.some(c => c.notes)) document.getElementById("notesToggle").style.display = "none";
 
 function metaHtml(c) {
-  const [s, e] = trimOf(c), cut = trims[c.file];
+  const [s, e] = trimOf(c), nCuts = cutsOf(c).length;
+  const parts = [];
+  if (trims[c.file]) parts.push(`trimmed ${fmt(s)} → ${fmt(e)}`);
+  if (nCuts) parts.push(`${nCuts} cut${nCuts > 1 ? "s" : ""}`);
   return `<span class="num">#${c.n}</span><span>${esc(c.file)}</span>` +
-    (cut ? `<span class="trimmed num">trimmed ${fmt(s)} → ${fmt(e)} (${fmt(e - s)} of ${fmt(c.dur)})</span><button data-act="untrim">undo trim</button>`
-         : `<span class="num">${fmt(c.dur)}</span>`) +
+    (edited(c) ? `<span class="trimmed num">${parts.join(", ")}: ${fmt(kept(c))} kept of ${fmt(c.dur)}</span><button data-act="untrim">undo trims &amp; cuts</button>`
+               : `<span class="num">${fmt(c.dur)}</span>`) +
     (tooShort(c) ? `<span class="short">too short: under ${fmt(MIN_DUR)}${autoBad[c.file] ? ", marked bad automatically" : ""}</span>` : "") +
-    (tooLong(c) ? `<span class="short">too long: crop to ${fmt(MAX_DUR)} or less to pass</span>` : "") +
+    (tooLong(c) ? `<span class="short">too long: trim or cut it to ${fmt(MAX_DUR)} or less to pass</span>` : "") +
     (c.tags || []).map(t => `<span>${esc(t)}</span>`).join("");
 }
 
@@ -163,12 +178,24 @@ function drawWave(i) {
   if (cv.width !== w * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
   const ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
   const [s, e] = trimOf(c), xs = s / c.dur * w, xe = e / c.dur * w, n = c.peaks.length, bw = w / n;
-  const waveIn = css("--wave-in"), waveOut = css("--wave");
+  const waveIn = css("--wave-in"), waveOut = css("--wave"), X = t => t / c.dur * w;
   ctx.fillStyle = css("--cut"); ctx.fillRect(0, 0, xs, h); ctx.fillRect(xe, 0, w - xe, h);
+  for (const [a, b] of cutsOf(c)) ctx.fillRect(X(a), 0, X(b) - X(a), h);
   for (let k = 0; k < n; k++) {
-    const x = k * bw, a = Math.max(1, c.peaks[k] * (h / 2 - 3));
-    ctx.fillStyle = (x + bw / 2 >= xs && x + bw / 2 <= xe) ? waveIn : waveOut;
+    const x = k * bw, a = Math.max(1, c.peaks[k] * (h / 2 - 3)), mid = (x + bw / 2) / w * c.dur;
+    ctx.fillStyle = (x + bw / 2 >= xs && x + bw / 2 <= xe && !cutAt(c, mid)) ? waveIn : waveOut;
     ctx.fillRect(x, h / 2 - a, Math.max(1, bw - .6), a * 2);
+  }
+  ctx.strokeStyle = css("--bad"); ctx.lineWidth = 1;
+  for (const [a, b] of cutsOf(c)) {  // cut ranges: crossed out
+    ctx.beginPath(); ctx.moveTo(X(a), 2); ctx.lineTo(X(b), h - 2); ctx.moveTo(X(a), h - 2); ctx.lineTo(X(b), 2); ctx.stroke();
+    ctx.strokeRect(X(a) + .5, .5, X(b) - X(a) - 1, h - 1);
+  }
+  if (sel && sel.file === c.file) {  // pending selection
+    const xa = X(Math.min(sel.a, sel.b)), xb = X(Math.max(sel.a, sel.b));
+    ctx.fillStyle = css("--sel"); ctx.fillRect(xa, 0, xb - xa, h);
+    ctx.fillStyle = css("--sel-edge");
+    for (const x of [xa, xb]) { ctx.fillRect(Math.round(x) - 1, 0, 2, h); ctx.fillRect(Math.round(x) - 4, h / 2 - 6, 8, 12); }
   }
   ctx.fillStyle = css("--accent");
   for (const x of [xs, xe]) { ctx.fillRect(Math.round(x) - 1, 0, 2, h); ctx.fillRect(Math.round(x) - 5, 0, 10, 6); ctx.fillRect(Math.round(x) - 5, h - 6, 10, 6); }
@@ -197,30 +224,70 @@ function refreshMeta(i) {
 
 function attachWave(row, i) {
   const cv = row.querySelector("canvas");
-  let drag = null;
-  const tAt = ev => { const r = cv.getBoundingClientRect(); return Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) * view[i].dur; };
+  let drag = null, downX = 0;  // drag: "s"/"e" trim handle, "a"/"b" selection edge, "new" selecting, "click" not moved yet
+  const rect = () => cv.getBoundingClientRect();
+  const tAt = ev => { const r = rect(); return Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) * view[i].dur; };
+  const near = (ev, t) => Math.abs(ev.clientX - rect().left - t / view[i].dur * rect().width) < 9;
+  const hit = ev => {
+    const c = view[i], [s, e] = trimOf(c);
+    if (sel && sel.file === c.file) { if (near(ev, sel.a)) return "a"; if (near(ev, sel.b)) return "b"; }
+    if (near(ev, s)) return "s"; if (near(ev, e)) return "e";
+    return null;
+  };
   cv.addEventListener("pointerdown", ev => {
     select(i);
-    const c = view[i], [s, e] = trimOf(c), r = cv.getBoundingClientRect();
-    const px = ev.clientX - r.left, xs = s / c.dur * r.width, xe = e / c.dur * r.width;
-    if (Math.abs(px - xs) < 10 || Math.abs(px - xe) < 10) {
-      drag = Math.abs(px - xs) <= Math.abs(px - xe) ? "s" : "e";
-      cv.setPointerCapture(ev.pointerId); player.pause();
-    } else {
-      playFrom(Math.max(s, Math.min(tAt(ev), e - 0.05)));
-    }
+    const c = view[i], h = hit(ev);
+    try { cv.setPointerCapture(ev.pointerId); } catch (err) {}
+    if (h) { drag = h; player.pause(); return; }
+    drag = "click"; downX = ev.clientX;
   });
   cv.addEventListener("pointermove", ev => {
-    const c = view[i], r = cv.getBoundingClientRect(), px = ev.clientX - r.left, [s, e] = trimOf(c);
-    cv.style.cursor = (Math.abs(px - s / c.dur * r.width) < 10 || Math.abs(px - e / c.dur * r.width) < 10 || drag) ? "ew-resize" : "pointer";
-    if (!drag) return;
-    const t = tAt(ev);
-    if (drag === "s" ? setTrim(c, t, e) : setTrim(c, s, t)) { drawWave(i); refreshMeta(i); }
+    const c = view[i], [s, e] = trimOf(c), t = tAt(ev);
+    if (!drag) { const h = hit(ev); cv.style.cursor = h ? "ew-resize" : cutAt(c, t) ? "copy" : "text"; return; }
+    if (drag === "click" && Math.abs(ev.clientX - downX) > 4) {  // started dragging on the wave: new selection
+      const t0 = Math.max(s, Math.min(e, tAt({ clientX: downX })));
+      sel = { file: c.file, a: t0, b: t0 }; drag = "b"; player.pause();
+    }
+    if (drag === "s" || drag === "e") {
+      if (drag === "s" ? setTrim(c, t, e) : setTrim(c, s, t)) { drawWave(i); refreshMeta(i); }
+    } else if (drag === "a" || drag === "b") {
+      sel[drag] = Math.max(s, Math.min(e, t)); drawWave(i);
+    }
   });
-  cv.addEventListener("pointerup", () => {
-    if (drag) { const c = view[i]; drag = null; playFrom(trimOf(c)[0]); }
+  cv.addEventListener("pointerup", ev => {
+    const c = view[i], was = drag; drag = null;
+    if (was === "click") {
+      const t = tAt(ev), hitCut = cutAt(c, t);
+      if (hitCut) { cuts[c.file] = cutsOf(c).filter(x => x !== hitCut); if (!cuts[c.file].length) delete cuts[c.file]; refreshMeta(i); drawWave(i); toast("Cut restored"); return; }
+      if (sel && sel.file === c.file) { sel = null; drawWave(i); }
+      const [s, e] = trimOf(c); playFrom(Math.max(s, Math.min(t, e - 0.05)));
+    } else if (was === "s" || was === "e") {
+      playFrom(trimOf(c)[0]);
+    } else if (was === "a" || was === "b") {
+      if (Math.abs(sel.b - sel.a) < 0.03) { sel = null; drawWave(i); return; }
+      const a = Math.min(sel.a, sel.b), b = Math.max(sel.a, sel.b);
+      sel = { file: c.file, a, b }; drawWave(i);
+      toast(`Selected ${fmt(b - a)}: press Delete or C to cut it, S to hear it`);
+    }
   });
 }
+
+// Cut the pending selection out of the current clip (overlapping cuts are merged).
+function cutSelection() {
+  const c = view[current]; if (!c || !sel || sel.file !== c.file) { toast("Drag across the waveform to select a part to cut"); return; }
+  const merged = [...cutsOf(c), [sel.a, sel.b]].sort((x, y) => x[0] - y[0]).reduce((acc, [a, b]) => {
+    const last = acc[acc.length - 1];
+    if (last && a <= last[1] + 0.005) last[1] = Math.max(last[1], b); else acc.push([a, b]);
+    return acc;
+  }, []).map(([a, b]) => [+a.toFixed(3), +b.toFixed(3)]);
+  cuts[c.file] = merged; const len = sel.b - sel.a; sel = null;
+  refreshMeta(current); drawWave(current); toast(`Cut ${fmt(len)}: ${fmt(kept(c))} kept`);
+}
+function playSelection() {
+  const c = view[current]; if (!c || !sel || sel.file !== c.file) return;
+  playFrom(sel.a); selStop = sel.b;
+}
+let selStop = null;
 
 // ---- list ----------------------------------------------------------------
 function render() {
@@ -266,7 +333,7 @@ function stats() {
   document.getElementById("total").textContent = CLIPS.length;
   document.getElementById("goodN").textContent = good;
   document.getElementById("badN").textContent = bad;
-  document.getElementById("trimN").textContent = Object.keys(trims).length;
+  document.getElementById("trimN").textContent = CLIPS.filter(edited).length;
   document.getElementById("barFill").style.width = ((good + bad) / CLIPS.length * 100) + "%";
 }
 
@@ -275,7 +342,9 @@ function highlight(scroll = true) {
   const el = list.querySelector(`.row[data-i="${current}"]`);
   if (scroll && el) el.scrollIntoView({ block: "center", behavior: "smooth" });
 }
-function select(i) { if (i !== current) { player.pause(); const old = current; current = i; highlight(); drawWave(old); } }
+function select(i) {
+  if (i !== current) { player.pause(); const old = current; current = i; if (sel) sel = null; highlight(); drawWave(old); }
+}
 
 // ---- playback (always inside the trim window) ------------------------------
 function playFrom(t) {
@@ -284,17 +353,27 @@ function playFrom(t) {
   const go = () => { player.currentTime = t; player.play().catch(err => console.warn("play failed", err)); };
   if (player.readyState >= 1) go(); else player.addEventListener("loadedmetadata", go, { once: true });
 }
-function playCurrent() { const c = view[current]; if (c) playFrom(trimOf(c)[0]); }
+function playCurrent() { const c = view[current]; if (c) { selStop = null; playFrom(trimOf(c)[0]); } }
 function toggle() {
   const c = view[current]; if (!c) return;
   const [s, e] = trimOf(c), same = player.src.endsWith(c.src);
+  selStop = null;
   if (same && !player.paused) player.pause();
   else if (same && player.currentTime > s && player.currentTime < e - 0.05) player.play();
   else playCurrent();
 }
+// While playing: jump over cut ranges, stop at the trim end (or at the end of a selection being auditioned).
 function stopAtTrimEnd() {
   const c = view[current];
-  if (c && player.src.endsWith(c.src) && !player.paused && player.currentTime >= trimOf(c)[1]) player.pause();
+  if (!c || !player.src.endsWith(c.src) || player.paused) return;
+  const t = player.currentTime;
+  if (selStop !== null) { if (t >= selStop) { player.pause(); selStop = null; } return; }
+  const inCut = cutAt(c, t);
+  if (inCut) {
+    if (inCut[1] >= trimOf(c)[1] - 0.01) player.pause(); else player.currentTime = inCut[1];
+    return;
+  }
+  if (t >= trimOf(c)[1]) player.pause();
 }
 let raf = 0;
 function tick() {
@@ -334,7 +413,11 @@ function trimAtPlayhead(which) {
   const [s, e] = trimOf(c), t = player.currentTime;
   if (which === "s" ? setTrim(c, t, e) : setTrim(c, s, t)) { drawWave(current); refreshMeta(current); }
 }
-function untrim() { const c = view[current]; if (!c) return; delete trims[c.file]; drawWave(current); refreshMeta(current); }
+function untrim() {
+  const c = view[current]; if (!c) return;
+  delete trims[c.file]; delete cuts[c.file]; if (sel && sel.file === c.file) sel = null;
+  drawWave(current); refreshMeta(current);
+}
 
 document.addEventListener("keydown", e => {
   if (e.target.tagName === "INPUT" && e.target.type !== "checkbox") return;
@@ -350,6 +433,9 @@ document.addEventListener("keydown", e => {
   else if (k === "[") trimAtPlayhead("s");
   else if (k === "]") trimAtPlayhead("e");
   else if (k === "x") untrim();
+  else if (k === "delete" || k === "backspace" || k === "c") { e.preventDefault(); cutSelection(); }
+  else if (k === "s") playSelection();
+  else if (k === "escape" && sel) { sel = null; drawWave(current); }
 });
 
 document.querySelectorAll(".chip").forEach(ch => ch.onclick = () => {
@@ -358,12 +444,12 @@ document.querySelectorAll(".chip").forEach(ch => ch.onclick = () => {
 });
 document.getElementById("showNotes").onchange = e => document.body.classList.toggle("blind", !e.target.checked);
 document.getElementById("reset").onclick = () => {
-  if (confirm("Clear all your ratings and trims?")) { ratings = {}; trims = {}; autoBad = {}; CLIPS.forEach(enforce); save(); render(); }
+  if (confirm("Clear all your ratings, trims and cuts?")) { ratings = {}; trims = {}; cuts = {}; autoBad = {}; sel = null; CLIPS.forEach(enforce); save(); render(); }
 };
 document.getElementById("export").onclick = () => {
   const good = CLIPS.filter(c => ratings[c.file] === "good").map(c => c.file);
   const bad = CLIPS.filter(c => ratings[c.file] === "bad").map(c => c.file);
-  const out = { good, bad, unrated: CLIPS.filter(c => !ratings[c.file]).map(c => c.file), trims, min_duration: MIN_DUR, max_duration: MAX_DUR };
+  const out = { good, bad, unrated: CLIPS.filter(c => !ratings[c.file]).map(c => c.file), trims, cuts, min_duration: MIN_DUR, max_duration: MAX_DUR };
   const blob = new Blob([JSON.stringify(out, null, 1)], { type: "application/json" });
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "picks.json"; a.click();
 };
@@ -376,9 +462,10 @@ document.getElementById("importFile").onchange = async e => {
   const find = k => byFile[k] || byNum[String(k)] || byFile[String(k).split("/").pop()];
   let n = 0;
   for (const [k, v] of Object.entries(p.trims || {})) { const c = find(k); if (c) { trims[c.file] = v; n++; } }
+  for (const [k, v] of Object.entries(p.cuts || {})) { const c = find(k); if (c && v.length) { cuts[c.file] = v; n++; } }
   for (const v of ["good", "bad"]) for (const k of p[v] || []) { const c = find(k); if (c) { ratings[c.file] = v; delete autoBad[c.file]; n++; } }
   CLIPS.forEach(enforce); save(); render(); e.target.value = "";
-  toast(`Loaded ${n} ratings/trims`);
+  toast(`Loaded ${n} ratings/trims/cuts`);
 };
 document.getElementById("minNote").textContent =
   (MIN_DUR > 0 ? ` · min ${fmt(MIN_DUR)}` : "") + (MAX_DUR > 0 ? ` · max ${fmt(MAX_DUR)}` : "");
