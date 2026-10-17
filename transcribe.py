@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Transcribe audio clips with Gemini (used by build.py --transcribe gemini; also works on its own).
+"""Transcribe audio clips with Gemini (serve.py uses analyze_one; this script transcribes a whole folder).
 
     GEMINI_API_KEY=... python transcribe.py path/to/clips --language "Asante Twi" --out transcripts.csv
 
@@ -30,6 +30,57 @@ def prompt_for(language):
             "orthography and its special letters and tone marks where they are normally written "
             "(for Ghanaian languages, for example ɛ ɔ ŋ ɖ ƒ ɣ ʋ). Do not translate, summarise or add "
             "anything. If a word is unclear, write your best guess. Output only the transcription text.")
+
+
+VOICES = ["young male", "adult male", "elderly male", "young female", "adult female", "elderly female", "child"]
+EMOTIONS = ["neutral", "happy", "sad", "angry", "fearful", "surprised", "disgusted", "calm", "excited",
+            "tender", "stern", "pleading", "sarcastic", "curious"]
+
+
+def make_label(voice, emotion):
+    return f"{voice} - {emotion}"
+
+
+def analyze_one(path, key, model, language, voices=VOICES, emotions=EMOTIONS, retries=5):
+    """One Gemini call -> {"text", "voice", "emotion", "label"}: the transcription plus the speaker's voice
+    characteristic and perceived emotion, each chosen from the given lists."""
+    data = open(path, "rb").read()
+    lang = f"in {language}" if language else "in the language that is spoken"
+    prompt = (f"Listen to this speech clip.\n1. transcription: {prompt_for(language)}\n"
+              f"2. voice: the speaker's voice characteristic, chosen from the allowed values.\n"
+              f"3. emotion: the emotion the speaker conveys (tone of voice, not just the words), chosen from the "
+              f"allowed values.")
+    schema = {"type": "OBJECT", "properties": {
+        "transcription": {"type": "STRING"},
+        "voice": {"type": "STRING", "enum": list(voices)},
+        "emotion": {"type": "STRING", "enum": list(emotions)}},
+        "required": ["transcription", "voice", "emotion"]}
+    body = {
+        "contents": [{"parts": [
+            {"inline_data": {"mime_type": MIME.get(os.path.splitext(path)[1].lower(), "audio/wav"),
+                             "data": base64.b64encode(data).decode()}},
+            {"text": prompt}]}],
+        "generationConfig": {"temperature": 0, "responseMimeType": "application/json", "responseSchema": schema},
+    }
+    req = urllib.request.Request(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        json.dumps(body).encode(), {"Content-Type": "application/json", "x-goog-api-key": key})
+    for attempt in range(retries):
+        try:
+            resp = json.loads(urllib.request.urlopen(req, timeout=120).read())
+            out = json.loads(resp["candidates"][0]["content"]["parts"][0]["text"])
+            return {"text": out["transcription"].strip(), "voice": out["voice"], "emotion": out["emotion"],
+                    "label": make_label(out["voice"], out["emotion"])}
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 500, 503) and attempt < retries - 1:
+                time.sleep(5 * 2 ** attempt)
+                continue
+            raise RuntimeError(f"HTTP {e.code}: {e.read().decode()[:200]}")
+        except (urllib.error.URLError, TimeoutError, KeyError, json.JSONDecodeError):
+            if attempt < retries - 1:
+                time.sleep(5 * 2 ** attempt)
+                continue
+            raise
 
 
 def gemini_key(key_file=None):

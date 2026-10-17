@@ -379,7 +379,8 @@ def main():
                         "--meta", os.path.join(a.out, "shortlist.json"), "--out", a.out, "--title", title,
                         "--min-duration", str(a.min_duration), "--max-duration", str(a.max_duration),
                         "--min-gap", str(a.min_gap), "--keep-gap", str(a.keep_gap), "--edge-pad", str(a.pad),
-                        "--port", str(a.port), "--host", a.host, "--model", a.model, "--key-file", a.key_file]
+                        "--port", str(a.port), "--host", a.host, "--model", a.model, "--key-file", a.key_file,
+                        "--voices", a.voices, "--emotions", a.emotions]
                        + (["--language", a.language] if a.language else [])
                        + (["--no-browser"] if a.no_browser else []) + (["--build-only"] if a.build_only else []),
                        check=True)

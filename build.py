@@ -3,7 +3,6 @@
 
     python build.py path/to/audio                              # every audio file under the folder
     python build.py path/to/audio --meta clips.csv             # add text / notes per clip
-    python build.py path/to/audio --out review --copy          # portable folder you can zip and share
     python build.py path/to/audio --min-duration 2 --max-duration 15   # allowed kept length per clip
 
 When it's done it starts the review server and opens http://localhost:8765 in your browser (the page only
@@ -111,8 +110,6 @@ def main():
     ap.add_argument("--max-duration", type=float, default=10.0,
                     help="seconds a clip may keep and still pass; longer clips must be trimmed before they can be "
                          "marked good (default: 10.0, 0 = no maximum)")
-    ap.add_argument("--copy", action="store_true",
-                    help="copy the audio into <out>/audio so the folder is self-contained (default: link by relative path)")
     ap.add_argument("--silences", choices=["vad", "energy", "off"], default="vad",
                     help="detect silences for automatic removal: Silero VAD (default), an energy threshold, or off")
     ap.add_argument("--no-precut", action="store_true",
@@ -193,13 +190,12 @@ def main():
         dur, pk = peaks(data, sr)
         if precut:
             src, key = os.path.join("clips", out_rel), out_rel
-        elif a.copy:
+        else:  # the server only serves files inside the review folder, so the audio goes in it
             dst = os.path.join(out, "audio", rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
-            shutil.copyfile(path, dst)
+            if os.path.realpath(dst) != os.path.realpath(path):
+                shutil.copyfile(path, dst)
             src = os.path.join("audio", rel)
-        else:
-            src = os.path.relpath(path, out)
         if not precut:
             key = rel
         row = meta.get(rel) or meta.get(os.path.basename(rel)) or {}

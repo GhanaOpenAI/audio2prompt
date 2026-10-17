@@ -6,7 +6,7 @@ for zero-shot TTS / voice cloning, all on a CPU and in your browser:
 1. **Screen**: score every clip with two tiny CPU models and shortlist the best N (default 200).
 2. **Clean**: remove silences, and drop clips without enough speech left.
 3. **Review**: listen in a local review app; mark each clip good or bad, trim or cut what's wrong,
-   check its transcript (Gemini fills it in) and give it a label.
+   and check its transcript and label (Gemini fills both in when you pass a clip).
 4. **Publish**: download the dataset (audio + `metadata.csv`) or push it straight to Hugging Face.
 
 ![Reviewer screenshot](docs/screenshot.png)
@@ -115,11 +115,12 @@ python build.py path/to/clips --min-duration 2 --max-duration 15   # allowed kep
   a 10 ms crossfade so the join doesn't click.
 - **Playback only covers what you're keeping**: it starts at the trim start, jumps over cuts and stops
   at the trim end, so you hear exactly what will be exported.
-- **Transcript and label for every clip you pass:** a clip marked ✓ good gets a **✎ Transcript**
-  button (or press `T`) and a label field.
-  - The transcript opens in a popup with a ▶ Play button, the text, and the suggestions available
-    (Gemini's, and the text the clip came with), each with **Use**. Save with the button or `Ctrl+Enter`.
-    The row shows whether the text is still Gemini's / your data's or **✔ checked** by you.
+- **Transcript and label for every clip you pass:** a clip marked ✓ good gets a **✎ Review** button
+  (or press `T`) and a label field.
+  - The popup has ▶ Play, the transcript, the label, and the suggestions available (Gemini's, and the
+    text/label the clip came with), each with **Use**. **Save & mark checked** (or `Ctrl+Enter`) confirms
+    both. The row shows "✔ checked" or what is still AI-generated / from your data.
+  - The **Unchecked** filter lists passed clips whose transcript or label you haven't confirmed.
   - Under the text, a character pad has the letters of Ghanaian orthographies and IPA that most
     keyboards lack (ɛ ɔ ŋ ɖ ƒ ɣ ʋ ɩ ʊ ʒ ɲ, Hausa ɓ ɗ ƙ ƴ, ə ɪ ɨ ʉ ɑ ʃ ʔ ɡ ɟ ɸ β), ⇧ for capitals, and
     tone/nasal marks (◌́ ◌̀ ◌̂ ◌̌ ◌̃ ◌̄) that attach to the letter before the cursor. Click to insert.
@@ -155,7 +156,23 @@ python serve.py review --language "Asante Twi"    # (screen.py / build.py take -
 ```
 
 With a key, the review app sends every clip you mark ✓ good to Gemini, **as trimmed and cut at that
-moment**, and fills in its transcript; you open ✎ Transcript to correct it. "↻ Transcribe again" in the popup re-runs it after you change the cuts. The key stays in
+moment**, and fills in its **transcript and label** in one call; you open ✎ Review to correct them.
+
+The label is the speaker's **voice characteristic** plus the **emotion** they convey, e.g.
+`adult female - tender`. Gemini must pick each from a list, so labels stay consistent:
+
+| list | default | change with |
+|---|---|---|
+| voice | young male, adult male, elderly male, young female, adult female, elderly female, child | `--voices "a,b,c"` |
+| emotion | neutral, happy, sad, angry, fearful, surprised, disgusted, calm, excited, tender, stern, pleading, sarcastic, curious | `--emotions "a,b,c"` |
+
+Every combination is offered in the label dropdown, alongside labels you type yourself.
+**✨ AI-fill passed clips** does the same for every passed clip that doesn't have both yet.
+
+**Before you download or push**, if any passed clip still has an AI-generated (or unchecked)
+transcript or label, you're asked to **Review them** (opens the Unchecked filter) or **Continue with
+AI values**. `metadata.csv` records which it was in `transcription_source` / `label_source`
+(`human`, `ai` or `data`). "↻ Transcribe again" in the popup re-runs it after you change the cuts. The key stays in
 the `serve.py` process (the page never sees it), results are cached in `review/gemini_transcripts.json`,
 and `--model` picks the Gemini model (default `gemini-flash-latest`). Without a key, `serve.py` just
 serves the page.
@@ -180,7 +197,8 @@ Both use the Hugging Face "audiofolder" layout, so the result loads directly:
 ```python
 from datasets import load_dataset
 ds = load_dataset("your-org/your-dataset", split="train")   # or load_dataset("audiofolder", data_dir="dataset")
-# columns: audio, transcription, label, duration_sec, source_file, start_sec, end_sec, cuts
+# columns: audio, transcription, label, transcription_source, label_source, duration_sec,
+#          source_file, start_sec, end_sec, cuts
 ```
 
 ## Exporting from the command line
@@ -214,9 +232,8 @@ Different column names? Map them: `--text-col transcript --subtitle-col english 
 
 - Supported formats: anything [soundfile](https://python-soundfile.readthedocs.io) can read:
   WAV, FLAC, OGG/Opus, MP3, AIFF.
-- The review folder is self-contained once silences are pre-cut (the default): `clips/`, `index.html`,
-  `progress.json`. With `--no-precut`, the page plays your original files; keep them where they were
-  (or use `--copy`).
+- The review folder is self-contained: `clips/` (or `audio/` with `--no-precut`), `index.html`,
+  `progress.json`; your original audio is never modified.
 - The server listens on 127.0.0.1 only unless you pass `--host`. Audio and keys stay on your machine;
   Gemini (when you use it) and Hugging Face (when you push) are the only outside services.
 

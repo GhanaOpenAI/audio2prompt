@@ -134,6 +134,7 @@
     <button class="chip" data-f="unrated" aria-pressed="false">Unrated</button>
     <button class="chip" data-f="good" aria-pressed="false">Good</button>
     <button class="chip" data-f="bad" aria-pressed="false">Bad</button>
+    <button class="chip" data-f="unchecked" aria-pressed="false" title="Passed clips whose transcript or label you haven't checked">Unchecked</button>
     <label class="toggle" id="notesToggle"><input type="checkbox" id="showNotes"> show notes</label>
     <label class="toggle"><input type="checkbox" id="autoNext" checked> auto-play next</label>
     <span class="spacer"></span>
@@ -142,7 +143,7 @@
     <input type="file" id="importFile" accept=".json,application/json" hidden>
     <button class="btn" id="reset">Reset</button>
     <button class="btn" id="export">Download picks</button>
-    <button class="btn" id="txAll" hidden title="Send every passed clip that has no transcript yet to Gemini">✨ Transcribe passed clips</button>
+    <button class="btn" id="txAll" hidden title="Have Gemini transcribe and label every passed clip that doesn't have both yet">✨ AI-fill passed clips</button>
     <button class="btn" id="dlData" hidden title="Good clips (trims and cuts applied) + metadata.csv, as a zip">⬇ Download dataset</button>
     <button class="btn primary" id="pushHF" hidden title="Push the good clips with their transcripts and labels to a Hugging Face dataset">🤗 Push to HF</button>
   </div>
@@ -155,6 +156,14 @@
 <audio id="player" preload="auto"></audio>
 <div class="toast" id="toast"></div>
 <datalist id="labelOptions"></datalist>
+<dialog id="warnDlg">
+  <form method="dialog">
+    <div class="dlg-head"><b>Some transcripts or labels haven't been checked</b></div>
+    <div class="sugg" id="warnText"></div>
+    <div class="dlg-actions"><button value="cancel">Cancel</button><button value="review" id="warnReview">Review them</button>
+      <button value="continue" class="primary" id="warnGo">Continue with AI values</button></div>
+  </form>
+</dialog>
 <dialog id="hfDlg">
   <form method="dialog">
     <div class="dlg-head"><b>Push the dataset to Hugging Face</b></div>
@@ -179,8 +188,10 @@
     <div class="dlg-head"><b id="dlgTitle"></b><button type="button" id="dlgPlay" title="Play the clip">▶ Play</button></div>
     <textarea id="dlgText" rows="4" placeholder="Type exactly what is said"></textarea>
     <div class="charpad" id="dlgPad"></div>
+    <label class="sugg" style="flex-direction:row;align-items:center;gap:8px">Label
+      <input id="dlgLabel" list="labelOptions" placeholder="voice - emotion" style="flex:1;font:inherit;font-size:14px;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:6px 8px"></label>
     <div class="sugg" id="dlgSugg"></div>
-    <div class="dlg-actions"><button value="cancel">Cancel</button><button value="save" class="primary" id="dlgSave">Save</button></div>
+    <div class="dlg-actions"><button value="cancel">Cancel</button><button value="save" class="primary" id="dlgSave">Save &amp; mark checked</button></div>
   </form>
 </dialog>
 <script>
@@ -206,7 +217,7 @@ const load = k => { try { return JSON.parse(localStorage.getItem(STORE + k) || "
 let ratings = load(":ratings"), trims = load(":trims"), autoBad = load(":autobad"), cuts = load(":cuts");
 let silDone = load(":silence");  // clips whose silences were already handled automatically (so undo sticks)
 let texts = load(":texts"), labels = load(":labels");  // your transcripts and labels (override what was loaded)
-let autoTexts = load(":autotexts");  // Gemini transcripts fetched through serve.py
+let autoTexts = load(":autotexts"), autoLabels = load(":autolabels");  // Gemini's transcripts and labels
 let api = null;  // {transcribe, model, language} when the page is served by serve.py
 const busy = new Set();  // clips being transcribed right now
 const save = () => {
@@ -215,22 +226,24 @@ const save = () => {
     localStorage.setItem(STORE + ":autobad", JSON.stringify(autoBad)); localStorage.setItem(STORE + ":cuts", JSON.stringify(cuts));
     localStorage.setItem(STORE + ":silence", JSON.stringify(silDone));
     localStorage.setItem(STORE + ":texts", JSON.stringify(texts)); localStorage.setItem(STORE + ":labels", JSON.stringify(labels));
-    localStorage.setItem(STORE + ":autotexts", JSON.stringify(autoTexts));
+    localStorage.setItem(STORE + ":autotexts", JSON.stringify(autoTexts)); localStorage.setItem(STORE + ":autolabels", JSON.stringify(autoLabels));
   } catch (e) {}
   if (api) scheduleSync();
 };
 // When served by serve.py, your work is also saved in <review>/progress.json (see syncFromServer).
-const stateMaps = () => ({ ratings, trims, cuts, autoBad, silDone, texts, labels, autoTexts });
+const stateMaps = () => ({ ratings, trims, cuts, autoBad, silDone, texts, labels, autoTexts, autoLabels });
 let syncTimer = 0;
 function scheduleSync() {
   clearTimeout(syncTimer);
   syncTimer = setTimeout(() => {
-    fetch("api/progress", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(stateMaps()) })
+    fetch("api/progress", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ _version: 2, ...stateMaps() }) })
+      .then(r => { if (r.status === 409) toast("This page is out of date: reload it to keep saving your work"); })
       .catch(() => toast("Could not save progress to the server (it is still saved in this browser)"));
   }, 600);
 }
 window.addEventListener("beforeunload", () => {
-  if (api) navigator.sendBeacon("api/progress", new Blob([JSON.stringify(stateMaps())], { type: "application/json" }));
+  if (api) navigator.sendBeacon("api/progress", new Blob([JSON.stringify({ _version: 2, ...stateMaps() })], { type: "application/json" }));
 });
 // Merge what the server has into this browser's copy (this browser wins where both have a value).
 async function syncFromServer() {
@@ -323,7 +336,11 @@ function toast(msg) {
 }
 const textOf = c => c.file in texts ? texts[c.file] : c.file in autoTexts ? autoTexts[c.file] : (c.text || "");
 const textSource = c => c.file in texts ? "yours" : c.file in autoTexts ? "gemini" : c.text ? "loaded" : "none";
-const labelOf = c => c.file in labels ? labels[c.file] : (c.label || "");
+const labelOf = c => c.file in labels ? labels[c.file] : c.file in autoLabels ? autoLabels[c.file] : (c.label || "");
+const labelSource = c => c.file in labels ? "yours" : c.file in autoLabels ? "gemini" : c.label ? "loaded" : "none";
+// "Checked" = you saved the transcript and label yourself (popup Save, or editing them).
+const isChecked = c => textSource(c) === "yours" && labelSource(c) === "yours";
+const needsAI = c => !(c.file in texts || c.file in autoTexts) || !(c.file in labels || c.file in autoLabels);
 // Letters of Ghanaian orthographies (Akan, Ewe, Ga, Dagbani and other Gur languages, Hausa) plus common
 // IPA extras, and combining tone/nasal marks that attach to the letter before them.
 const CHARS = ["ɛ", "ɔ", "ŋ", "ɖ", "ƒ", "ɣ", "ʋ", "ɩ", "ʊ", "ʒ", "ɲ", "ɓ", "ɗ", "ƙ", "ƴ", "ə", "ɪ", "ɨ", "ʉ", "ɑ", "ʃ", "ʔ", "ɡ", "ɟ", "ɸ", "β"];
@@ -347,7 +364,9 @@ function insertChar(el, ch) {
 }
 // Every label used so far (loaded or typed) becomes a choice in the label field's dropdown.
 function refreshLabelOptions() {
-  const all = [...new Set([...CLIPS.map(c => c.label), ...Object.values(labels)].map(s => (s || "").trim()).filter(Boolean))]
+  const combos = api && api.voices ? api.voices.flatMap(v => api.emotions.map(e => `${v} - ${e}`)) : [];
+  const all = [...new Set([...CLIPS.map(c => c.label), ...Object.values(labels), ...Object.values(autoLabels), ...combos]
+    .map(s => (s || "").trim()).filter(Boolean))]
     .sort((x, y) => x.localeCompare(y));
   document.getElementById("labelOptions").innerHTML = all.map(l => `<option value="${esc(l)}"></option>`).join("");
 }
@@ -492,7 +511,8 @@ function cutSelection() {
 
 // ---- list ----------------------------------------------------------------
 function render() {
-  view = CLIPS.filter(c => filter === "all" ? true : filter === "unrated" ? !ratings[c.file] : ratings[c.file] === filter);
+  view = CLIPS.filter(c => filter === "all" ? true : filter === "unrated" ? !ratings[c.file]
+    : filter === "unchecked" ? ratings[c.file] === "good" && !isChecked(c) : ratings[c.file] === filter);
   list.innerHTML = view.length ? "" : `<div class="empty">Nothing here.</div>`;
   view.forEach((c, i) => {
     const r = ratings[c.file];
@@ -509,7 +529,7 @@ function render() {
         <div class="meta">${metaHtml(c)}</div>
         ${c.notes ? `<div class="notes">${esc(c.notes)}</div>` : ""}
         ${r === "good" ? `<div class="fields">
-          <button type="button" class="txbtn" title="Edit the transcript (T)">✎ Transcript</button>
+          <button type="button" class="txbtn" title="Check the transcript and label (T)">✎ Review</button>
           <span class="txstate">${txStateHtml(c)}</span>
           <label>Label <input class="lb" list="labelOptions" placeholder="type or pick" value="${esc(labelOf(c))}" size="16"></label>
         </div>` : ""}
@@ -534,6 +554,7 @@ function render() {
     if (lb) {
       lb.addEventListener("focus", () => select(i));
       lb.addEventListener("input", () => { labels[c.file] = lb.value.trim(); save(); });
+      lb.addEventListener("change", () => refreshRowText(c));
       lb.addEventListener("change", () => { refreshLabelOptions(); row.querySelector(".meta").innerHTML = metaHtml(c); });
     }
     attachWave(row, i);
@@ -616,7 +637,7 @@ function rate(v) {
   delete autoBad[c.file];
   if (v) ratings[c.file] = v; else delete ratings[c.file];
   enforce(c);
-  if (v === "good" && api && api.transcribe && !(c.file in texts) && !(c.file in autoTexts)) transcribe(c);
+  if (v === "good" && api && api.transcribe && needsAI(c)) transcribe(c);
   save();
   const key = c.file, keepPos = current;
   render();
@@ -643,7 +664,7 @@ function untrim() {
 }
 
 document.addEventListener("keydown", e => {
-  if (dlg.open || hfDlg.open) return;  // popups handle their own keys
+  if (dlg.open || hfDlg.open || warnDlg.open) return;  // popups handle their own keys
   if (e.target.tagName === "TEXTAREA" || (e.target.tagName === "INPUT" && e.target.type !== "checkbox")) return;
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   const k = e.key.toLowerCase();
@@ -669,7 +690,7 @@ document.querySelectorAll(".chip").forEach(ch => ch.onclick = () => {
 document.getElementById("showNotes").onchange = e => document.body.classList.toggle("blind", !e.target.checked);
 document.getElementById("reset").onclick = () => {
   if (confirm("Clear all your ratings, trims and cuts?")) {
-    ratings = {}; trims = {}; cuts = {}; autoBad = {}; silDone = {}; texts = {}; labels = {}; autoTexts = {}; refreshLabelOptions();
+    ratings = {}; trims = {}; cuts = {}; autoBad = {}; silDone = {}; texts = {}; labels = {}; autoTexts = {}; autoLabels = {}; refreshLabelOptions();
     if (SIL.auto) CLIPS.forEach(removeSilences);
     CLIPS.forEach(enforce); save(); render();
   }
@@ -684,8 +705,11 @@ function buildPicks() {
     if (ratings[c.file] === "good" || c.file in texts) transcripts[c.file] = textOf(c);
     if (ratings[c.file] === "good" || c.file in labels) labelMap[c.file] = labelOf(c);
   }
+  const srcName = { yours: "human", gemini: "ai", loaded: "data", none: "" };
+  const sources = Object.fromEntries(CLIPS.filter(c => ratings[c.file] === "good")
+    .map(c => [c.file, { transcription: srcName[textSource(c)], label: srcName[labelSource(c)] }]));
   return { good, bad, unrated: CLIPS.filter(c => !ratings[c.file]).map(c => c.file), trims, cuts,
-           transcripts, labels: labelMap, min_duration: MIN_DUR, max_duration: MAX_DUR };
+           transcripts, labels: labelMap, sources, min_duration: MIN_DUR, max_duration: MAX_DUR };
 }
 document.getElementById("export").onclick = () => {
   const out = buildPicks();
@@ -729,37 +753,47 @@ if (SIL.auto) {
 const dlg = document.getElementById("txDlg"), dlgText = document.getElementById("dlgText");
 let dlgClip = null;
 function txStateHtml(c) {
-  if (busy.has(c.file)) return `<span class="busy">✨ transcribing…</span>`;
-  const src = textSource(c);
-  return src === "gemini" ? "✨ Gemini (not checked yet)" : src === "yours" ? "✔ checked" : src === "loaded" ? "from your data (not checked yet)" : "no transcript yet";
+  if (busy.has(c.file)) return `<span class="busy">✨ transcribing and labelling…</span>`;
+  if (isChecked(c)) return "✔ checked";
+  const name = { gemini: "✨ AI", loaded: "from your data", none: "missing" };
+  const parts = [];
+  if (textSource(c) !== "yours") parts.push(`transcript: ${name[textSource(c)]}`);
+  if (labelSource(c) !== "yours") parts.push(`label: ${name[labelSource(c)]}`);
+  return parts.join(" · ") + " (not checked yet)";
 }
 function refreshRowText(c) {
   const i = view.indexOf(c), row = list.querySelector(`.row[data-i="${i}"]`); if (!row) return;
   const top = row.querySelector(".text"); top.textContent = textOf(c); top.hidden = !textOf(c);
   const st = row.querySelector(".txstate"); if (st) st.innerHTML = txStateHtml(c);
+  const lb = row.querySelector(".lb"); if (lb && document.activeElement !== lb) lb.value = labelOf(c);
+  row.querySelector(".meta").innerHTML = metaHtml(c);
 }
 function renderSuggestions(c) {
-  const rows = [];
-  if (c.file in autoTexts) rows.push(["✨ Gemini", autoTexts[c.file]]);
-  if (c.text) rows.push(["From your data", c.text]);
+  const rows = [];  // [title, value, target field]
+  if (c.file in autoTexts) rows.push(["✨ AI transcript", autoTexts[c.file], dlgText]);
+  if (c.text) rows.push(["Transcript from your data", c.text, dlgText]);
+  if (c.file in autoLabels) rows.push(["✨ AI label", autoLabels[c.file], dlgLabel]);
+  if (c.label) rows.push(["Label from your data", c.label, dlgLabel]);
   let html = rows.map(([k, v], n) => `<div><b>${k}:</b><span class="t">${esc(v)}</span><button type="button" data-use="${n}">Use</button></div>`).join("");
-  if (api && api.transcribe) html += `<div><button type="button" id="dlgGem">${busy.has(c.file) ? "✨ transcribing…" : (c.file in autoTexts ? "↻ Transcribe again with Gemini" : "✨ Transcribe with Gemini")}</button>
+  if (api && api.transcribe) html += `<div><button type="button" id="dlgGem">${busy.has(c.file) ? "✨ working…" : (c.file in autoTexts ? "↻ Ask Gemini again" : "✨ Transcribe & label with Gemini")}</button>
     <span>(uses the clip as trimmed and cut now)</span></div>`;
   const box = document.getElementById("dlgSugg"); box.innerHTML = html;
-  box.querySelectorAll("[data-use]").forEach(b => b.onclick = () => { dlgText.value = rows[+b.dataset.use][1]; dlgText.focus(); });
+  box.querySelectorAll("[data-use]").forEach(b => b.onclick = () => { const [, v, el] = rows[+b.dataset.use]; el.value = v; el.focus(); });
   const g = document.getElementById("dlgGem"); if (g) g.onclick = () => transcribe(c, true);
 }
+const dlgLabel = document.getElementById("dlgLabel");
 function openTranscript(c) {
   dlgClip = c;
   document.getElementById("dlgTitle").textContent = `#${c.n} ${c.file} · ${fmt(kept(c))}`;
-  dlgText.value = textOf(c);
+  dlgText.value = textOf(c); dlgLabel.value = labelOf(c);
   document.getElementById("dlgPad").innerHTML = charpadHtml();
   renderSuggestions(c);
   dlg.showModal(); dlgText.focus();
 }
 dlg.addEventListener("close", () => {
   if (dlg.returnValue === "save" && dlgClip) {
-    texts[dlgClip.file] = dlgText.value.trim(); save(); refreshRowText(dlgClip); toast("Transcript saved");
+    texts[dlgClip.file] = dlgText.value.trim(); labels[dlgClip.file] = dlgLabel.value.trim();
+    save(); refreshLabelOptions(); refreshRowText(dlgClip); toast("Transcript and label checked");
   }
   dlgClip = null;
 });
@@ -783,10 +817,11 @@ async function transcribe(c, force = false) {
       body: JSON.stringify({ src: c.src, trim: trims[c.file] || null, cuts: cutsOf(c) }) });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || r.status);
-    autoTexts[c.file] = j.text; save();
+    autoTexts[c.file] = j.text; autoLabels[c.file] = j.label; save(); refreshLabelOptions();
     if (dlgClip === c && (force || !dlgText.value.trim() || dlgText.value === c.text)) dlgText.value = j.text;
+    if (dlgClip === c && (force || !dlgLabel.value.trim() || dlgLabel.value === c.label)) dlgLabel.value = j.label;
   } catch (err) {
-    toast(`Gemini transcription failed: ${err.message}`);
+    toast(`Gemini failed: ${err.message}`);
   } finally {
     busy.delete(c.file); refreshRowText(c); if (dlgClip === c) renderSuggestions(c);
   }
@@ -794,8 +829,21 @@ async function transcribe(c, force = false) {
 // ---- dataset download / Hugging Face push (via serve.py) ---------------------
 const datasetRequest = extra => JSON.stringify({ picks: buildPicks(), srcs: Object.fromEntries(CLIPS.map(c => [c.file, c.src])), ...extra });
 const goodCount = () => CLIPS.filter(c => ratings[c.file] === "good").length;
-const uncheckedCount = () => CLIPS.filter(c => ratings[c.file] === "good" && textSource(c) !== "yours").length;
-document.getElementById("dlData").onclick = async () => {
+const uncheckedCount = () => CLIPS.filter(c => ratings[c.file] === "good" && !isChecked(c)).length;
+// Before exporting: warn about passed clips whose transcript/label you haven't checked.
+const warnDlg = document.getElementById("warnDlg");
+function guardUnchecked(next) {
+  const n = uncheckedCount(); if (!n) return next();
+  document.getElementById("warnText").innerHTML = `<b>${n}</b> of ${goodCount()} passed clips still have a transcript or label you
+    haven't checked (AI-generated, from your data, or missing). Review them first, or continue and export them as they are.`;
+  warnDlg.onclose = () => {
+    if (warnDlg.returnValue === "review") { document.querySelector('.chip[data-f="unchecked"]').click(); }
+    else if (warnDlg.returnValue === "continue") next();
+  };
+  warnDlg.returnValue = ""; warnDlg.showModal();
+}
+document.getElementById("dlData").onclick = () => guardUnchecked(downloadDataset);
+async function downloadDataset() {
   if (!goodCount()) { toast("Mark some clips good first"); return; }
   toast(`Building the dataset from ${goodCount()} clips…`);
   try {
@@ -804,7 +852,7 @@ document.getElementById("dlData").onclick = async () => {
     const a = document.createElement("a"); a.href = URL.createObjectURL(await r.blob()); a.download = "dataset.zip"; a.click();
     toast(`Downloaded dataset.zip: ${r.headers.get("X-Clips")} clips + metadata.csv`);
   } catch (err) { toast(`Download failed: ${err.message}`); }
-};
+}
 const hfDlg = document.getElementById("hfDlg"), $ = id => document.getElementById(id);
 const slugTitle = () => document.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "speech-prompts";
 const savedPref = k => { try { return localStorage.getItem(STORE + k) || ""; } catch (e) { return ""; } };
@@ -828,16 +876,17 @@ async function hfConnect(token) {
 }
 $("hfConnect").onclick = () => { const tok = $("hfToken").value.trim(); if (!tok) { $("hfResult").textContent = "Paste a token first"; return; } hfConnect(tok); };
 $("hfToken").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); $("hfConnect").click(); } });
-$("pushHF").onclick = () => {
+$("pushHF").onclick = () => guardUnchecked(openPush);
+function openPush() {
   const n = goodCount(), un = uncheckedCount();
   $("hfInfo").innerHTML = `${n} good clip${n === 1 ? "" : "s"} with transcripts and labels` +
-    (un ? ` · <b>${un} transcript${un === 1 ? "" : "s"} not checked yet</b>` : "");
+    (un ? ` · <b>${un} with AI or unchecked transcripts/labels</b>` : "");
   $("hfMachine").innerHTML = api.hf_user ? `or <a href="#" id="hfUseMachine">use the account logged in on this computer (${esc(api.hf_user)})</a>` : "";
   if (api.hf_user) $("hfUseMachine").onclick = ev => { ev.preventDefault(); hfConnect(""); };
   $("hfResult").innerHTML = "";
   hfDlg.showModal();
   if (hfWho) showRepoStep(); else showTokenStep();
-};
+}
 $("hfGo").onclick = async () => {
   const name = $("hfName").value.trim(), owner = $("hfOwner").value, res = $("hfResult"), go = $("hfGo");
   if (!/^[\w.-]+$/.test(name)) { res.textContent = "Use letters, numbers, - _ or . for the name"; return; }
@@ -857,13 +906,13 @@ $("hfGo").onclick = async () => {
 
 // Transcribe every passed clip that has neither your transcript nor Gemini's yet (3 at a time).
 $("txAll").onclick = async () => {
-  const todo = CLIPS.filter(c => ratings[c.file] === "good" && !(c.file in texts) && !(c.file in autoTexts) && !busy.has(c.file));
-  if (!todo.length) { toast("Every passed clip already has a transcript"); return; }
-  toast(`Transcribing ${todo.length} passed clips with Gemini…`);
+  const todo = CLIPS.filter(c => ratings[c.file] === "good" && needsAI(c) && !busy.has(c.file));
+  if (!todo.length) { toast("Every passed clip already has a transcript and a label"); return; }
+  toast(`Transcribing and labelling ${todo.length} passed clips with Gemini…`);
   let done = 0;
   const worker = async () => { while (todo.length) { await transcribe(todo.shift()); done++; } };
   await Promise.all([worker(), worker(), worker()]);
-  toast(`Transcribed ${done} clips: open ✎ Transcript on each to check`);
+  toast(`Done: ${done} clips filled in. Use the Unchecked filter to review them`);
 };
 
 // Served by serve.py? Then Gemini transcription and dataset export are available.

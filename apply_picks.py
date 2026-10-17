@@ -67,7 +67,8 @@ def splice(data, sr, segs):
     return out if out is not None else data[:0]
 
 
-FIELDS = ["file_name", "transcription", "label", "duration_sec", "source_file", "start_sec", "end_sec", "cuts"]
+FIELDS = ["file_name", "transcription", "label", "transcription_source", "label_source", "duration_sec",
+          "source_file", "start_sec", "end_sec", "cuts"]
 
 
 def export_dataset(picks, path_of, out_dir, include_unrated=False, min_dur=None, max_dur=None):
@@ -77,6 +78,7 @@ def export_dataset(picks, path_of, out_dir, include_unrated=False, min_dur=None,
     files = list(picks.get("good", [])) + (list(picks.get("unrated", [])) if include_unrated else [])
     trims, cuts = picks.get("trims", {}), picks.get("cuts", {})
     transcripts, labels = picks.get("transcripts", {}), picks.get("labels", {})
+    sources = picks.get("sources", {})  # per clip: who wrote the transcript/label: human, ai or data
     min_dur = float(picks.get("min_duration") or 0) if min_dur is None else min_dur
     max_dur = float(picks.get("max_duration") or 0) if max_dur is None else max_dur
     os.makedirs(os.path.join(out_dir, "audio"), exist_ok=True)
@@ -100,7 +102,9 @@ def export_dataset(picks, path_of, out_dir, include_unrated=False, min_dur=None,
         os.makedirs(os.path.dirname(os.path.join(out_dir, name)), exist_ok=True)
         sf.write(os.path.join(out_dir, name), data, sr, format="WAV",
                  subtype=info.subtype if info.format == "WAV" else "PCM_16")
+        who = sources.get(rel, {})
         rows.append({"file_name": name, "transcription": transcripts.get(rel, ""), "label": labels.get(rel, ""),
+                     "transcription_source": who.get("transcription", ""), "label_source": who.get("label", ""),
                      "duration_sec": round(len(data) / sr, 3), "source_file": rel,
                      "start_sec": round(start, 3), "end_sec": round(end, 3), "cuts": json.dumps(cuts.get(rel, []))})
 

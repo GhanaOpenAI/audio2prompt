@@ -5,7 +5,8 @@
     GEMINI_API_KEY=... python serve.py review --language "Asante Twi"
 
 build.py and screen.py start this automatically when they finish. Through it, the review page:
-  * transcribes every clip you mark good with Gemini (as trimmed and cut at that moment) for you to correct;
+  * has Gemini transcribe and label every clip you mark good (as trimmed and cut at that moment): the label
+    is a voice characteristic + a perceived emotion, each picked from a list (--voices / --emotions);
   * can download the finished dataset (audio/ + metadata.csv, zipped) or push it to a Hugging Face
     dataset repo: paste a token in the page (or use this machine's `huggingface-cli login`), pick your
     account or one of your organizations, and name the dataset.
@@ -30,7 +31,10 @@ import soundfile as sf
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from apply_picks import export_dataset, keep_segments, splice  # noqa: E402
-from transcribe import DEFAULT_MODEL, gemini_key, transcribe_one  # noqa: E402
+from transcribe import DEFAULT_MODEL, EMOTIONS, VOICES, analyze_one, gemini_key  # noqa: E402
+
+
+PROGRESS_VERSION = 2  # bump when the saved state changes shape; older open pages must reload
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -38,7 +42,7 @@ class Handler(SimpleHTTPRequestHandler):
     lock = threading.Lock()
 
     def log_message(self, fmt, *args):  # only log API calls, not every audio request
-        if "/api/" in (args[0] if args else ""):
+        if args and "/api/" in str(args[0]):
             sys.stderr.write("%s\n" % (fmt % args))
 
     def _json(self, code, obj):
@@ -56,6 +60,7 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path.split("?")[0].endswith("/api/status"):
             c = self.cfg
             return self._json(200, {"transcribe": bool(c["key"]), "model": c["model"], "language": c["language"],
+                                    "voices": c["voices"], "emotions": c["emotions"],
                                     "export": True, "hf_user": hf_user()})
         return super().do_GET()
 
@@ -96,21 +101,22 @@ class Handler(SimpleHTTPRequestHandler):
             buf = io.BytesIO()
             sf.write(buf, audio, sr, format="WAV", subtype="PCM_16")
             wav = buf.getvalue()
-            key = hashlib.sha1(wav).hexdigest() + f"|{c['model']}|{c['language'] or ''}"
+            key = (hashlib.sha1(wav).hexdigest() + f"|{c['model']}|{c['language'] or ''}|"
+                   + hashlib.sha1(json.dumps([c["voices"], c["emotions"]]).encode()).hexdigest()[:8])
             with self.lock:
                 cached = c["cache"].get(key)
             if cached is None:
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                     tmp.write(wav)
                 try:
-                    cached = transcribe_one(tmp.name, c["key"], c["model"], c["language"])
+                    cached = analyze_one(tmp.name, c["key"], c["model"], c["language"], c["voices"], c["emotions"])
                 finally:
                     os.unlink(tmp.name)
                 with self.lock:
                     c["cache"][key] = cached
                     with open(c["cache_file"], "w", encoding="utf-8") as f:
                         json.dump(c["cache"], f, ensure_ascii=False, indent=1)
-            return self._json(200, {"text": cached})
+            return self._json(200, cached)  # {text, voice, emotion, label}
         except Exception as e:
             return self._json(500, {"error": str(e)[:300]})
 
@@ -147,6 +153,8 @@ class Handler(SimpleHTTPRequestHandler):
         so it survives other browsers, cleared browser data and restarts."""
         try:
             state = self._read()
+            if state.pop("_version", 0) < PROGRESS_VERSION:  # an older copy of the page is still open
+                return self._json(409, {"error": "this page is out of date: reload it to keep saving"})
             f = os.path.join(self.cfg["root"], "progress.json")
             with self.lock:
                 with open(f + ".tmp", "w", encoding="utf-8") as out:
@@ -235,7 +243,7 @@ def dataset_card(repo, rows, language):
 
 
 def run(review_dir, port=8765, host="127.0.0.1", language=None, model=DEFAULT_MODEL,
-        key_file="~/.gemini_api_key", open_browser=True):
+        key_file="~/.gemini_api_key", open_browser=True, voices=VOICES, emotions=EMOTIONS):
     """Serve review_dir until Ctrl+C. Tries the next few ports if `port` is taken."""
     root = os.path.realpath(review_dir)
     if not os.path.isfile(os.path.join(root, "index.html")):
@@ -243,6 +251,7 @@ def run(review_dir, port=8765, host="127.0.0.1", language=None, model=DEFAULT_MO
     cache_file = os.path.join(root, "gemini_transcripts.json")
     key = gemini_key(key_file)
     Handler.cfg = {"root": root, "key": key, "model": model, "language": language, "cache_file": cache_file,
+                   "voices": list(voices), "emotions": list(emotions),
                    "cache": json.load(open(cache_file, encoding="utf-8")) if os.path.exists(cache_file) else {}}
     for p in range(port, port + 10):
         try:
@@ -273,10 +282,16 @@ def add_server_args(ap):
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"Gemini model (default: {DEFAULT_MODEL})")
     ap.add_argument("--key-file", default="~/.gemini_api_key", help="file holding the Gemini key if $GEMINI_API_KEY is unset")
     ap.add_argument("--no-browser", action="store_true", help="don't open the page in a browser")
+    ap.add_argument("--voices", default=",".join(VOICES),
+                    help="comma-separated voice characteristics Gemini picks from for labels (default: %(default)s)")
+    ap.add_argument("--emotions", default=",".join(EMOTIONS),
+                    help="comma-separated emotions Gemini picks from for labels (default: %(default)s)")
 
 
 def run_from_args(review_dir, a):
-    run(review_dir, a.port, a.host, a.language, a.model, a.key_file, not a.no_browser)
+    def split(s):
+        return [x.strip() for x in s.split(",") if x.strip()]
+    run(review_dir, a.port, a.host, a.language, a.model, a.key_file, not a.no_browser, split(a.voices), split(a.emotions))
 
 
 def main():
