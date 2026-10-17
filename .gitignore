@@ -3,3 +3,8 @@ __pycache__/
 example/review/
 review/
 picks.json
+
+__pycache__/
+gemini_transcripts.json
+transcripts*.csv
+transcripts*.cache.json

@@ -8,7 +8,11 @@ for zero-shot TTS / voice cloning:
 2. **Review** (`build.py`): silences are removed first and clips without enough speech are dropped;
    then you listen in a single local HTML page, mark each clip **good** or **bad**, and trim or cut
    anything still wrong.
-3. **Export** (`apply_picks.py`): write out the good clips with your trims and cuts applied.
+3. **Export** (`apply_picks.py`): write out the good clips with your trims and cuts applied, plus a
+   manifest with each clip's transcript and label.
+
+Optional: `serve.py` serves the review page on localhost and **transcribes every clip you pass with
+Gemini**, so you only correct the text.
 
 Built for curating speech datasets (picking clean voice-cloning reference clips, spot-checking
 TTS/ASR data), but the reviewer works for any short audio.
@@ -105,14 +109,17 @@ python build.py path/to/clips --min-duration 2 --max-duration 15   # allowed kep
   a 10 ms crossfade so the join doesn't click.
 - **Playback only covers what you're keeping**: it starts at the trim start, jumps over cuts and stops
   at the trim end, so you hear exactly what will be exported.
-- **Transcript and label for every clip you pass:** marking a clip ✓ good opens a transcript box
-  (pre-filled with the clip's text, if any) and a label field. Labels are free text, so you don't
-  need any loaded, but every label you type becomes a choice in the field's dropdown, so you only
-  type it once. Pre-fill labels from your metadata with `--label-col` (default `label`).
-  - Under the boxes, a character pad has the letters of Ghanaian orthographies and IPA that most
+- **Transcript and label for every clip you pass:** a clip marked ✓ good gets a **✎ Transcript**
+  button (or press `T`) and a label field.
+  - The transcript opens in a popup with a ▶ Play button, the text, and the suggestions available
+    (Gemini's, and the text the clip came with), each with **Use**. Save with the button or `Ctrl+Enter`.
+    The row shows whether the text is still Gemini's / your data's or **✔ checked** by you.
+  - Under the text, a character pad has the letters of Ghanaian orthographies and IPA that most
     keyboards lack (ɛ ɔ ŋ ɖ ƒ ɣ ʋ ɩ ʊ ʒ ɲ, Hausa ɓ ɗ ƙ ƴ, ə ɪ ɨ ʉ ɑ ʃ ʔ ɡ ɟ ɸ β), ⇧ for capitals, and
     tone/nasal marks (◌́ ◌̀ ◌̂ ◌̌ ◌̃ ◌̄) that attach to the letter before the cursor. Click to insert.
-  - Keyboard shortcuts are off while you type in these boxes.
+  - Labels are free text, so you don't need any loaded, but every label you type becomes a choice in
+    the field's dropdown, so you only type it once. Pre-fill labels from your metadata with
+    `--label-col` (default `label`).
 - **Allowed length:** what a clip keeps after trims and cuts must be between `--min-duration` and
   `--max-duration` (defaults **3 s** and **10 s**, the usual range for voice-cloning reference audio).
   - Too short, whether it started short or you trimmed it down: **marked bad automatically**, ✓ disabled.
@@ -132,6 +139,23 @@ python build.py path/to/clips --min-duration 2 --max-duration 15   # allowed kep
   "transcripts": { "a.wav": "Me pɛ sɛ wo ba ha" }, "labels": { "a.wav": "greeting" },
   "min_duration": 3.0, "max_duration": 10.0 }
 ```
+
+## Automatic transcription with Gemini
+
+```bash
+export GEMINI_API_KEY=...                         # or put it in ~/.gemini_api_key
+python serve.py review --language "Asante Twi"    # then open http://localhost:8765
+```
+
+Opened through `serve.py` (rather than as a file), the review page sends every clip you mark ✓ good to
+Gemini, **as trimmed and cut at that moment**, and fills in its transcript; you open ✎ Transcript to
+correct it. "↻ Transcribe again" in the popup re-runs it after you change the cuts. The key stays in
+the `serve.py` process (the page never sees it), results are cached in `review/gemini_transcripts.json`,
+and `--model` picks the Gemini model (default `gemini-flash-latest`). Without a key, `serve.py` just
+serves the page.
+
+To transcribe a whole folder up front instead: `python transcribe.py path/to/clips --language Ewe`
+(writes `transcripts.csv`).
 
 ## Exporting the good clips
 
