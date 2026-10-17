@@ -1,13 +1,48 @@
 # audio-clip-reviewer
 
-Listen to a folder of audio clips, mark each one **good** or **bad**, and **trim** junk off the
-start or end, all in a single HTML page that runs locally in your browser. Then export the good
-clips, cut to your trims.
+Find the best speech clips in a large pool, then check them by ear:
+
+1. **Screen** (`screen.py`): score every clip from a folder or a Hugging Face dataset with two tiny
+   CPU models and shortlist the top N (default 200).
+2. **Review** (`build.py`): listen to the shortlist in a single local HTML page, mark each clip
+   **good** or **bad**, and **trim** junk off the start or end.
+3. **Export** (`apply_picks.py`): write out the good clips, cut to your trims.
 
 Built for curating speech datasets (picking clean voice-cloning reference clips, spot-checking
-TTS/ASR data), but it works for any short audio.
+TTS/ASR data), but the reviewer works for any short audio.
 
 ![Reviewer screenshot](docs/screenshot.png)
+
+## Screening a big pool (CPU only)
+
+```bash
+pip install -r requirements.txt            # + `pip install datasets` for Hugging Face input
+
+python screen.py --folder path/to/clips --top 200
+python screen.py --hf user/dataset --split train --audio-column audio --text-column text --top 200
+# -> shortlist/index.html (review page), shortlist/audio/, shortlist/screening.csv
+```
+
+Each clip goes through two small ONNX models, with no PyTorch and no GPU. They're downloaded once to
+`~/.cache/audio-clip-reviewer` and checksum-verified:
+
+| model | size | what it measures |
+|---|---|---|
+| [Silero VAD](https://github.com/snakers4/silero-vad) v5 | 2.3 MB | where the speech is: trims silence off both ends, longest pause inside the speech, share of the clip that is speech |
+| [DNSMOS](https://github.com/microsoft/DNS-Challenge/tree/master/DNSMOS) P.835 | 1.2 MB | predicted listener scores (1–5): **SIG** speech quality, **BAK** background (higher = cleaner), **OVRL** overall |
+
+Clips are **rejected** if, after trimming the silent ends, they are shorter than `--min-duration`
+(3 s), have a pause longer than `--max-pause` (0.4 s), are less than `--min-speech-ratio` (75 %)
+speech, or clip. DNSMOS only runs on clips that survive the VAD checks, which is what keeps it fast.
+The rest are **ranked** by `--rank-by` (default `bak+ovrl`, favouring clean backgrounds) and the top
+`--top` are written edge-trimmed to `shortlist/audio/` with a ready-to-use review page.
+`screening.csv` lists every clip scanned with its scores and the reason for any rejection.
+
+Speed: about **24 clips/s on a 6-core laptop CPU** for typical 2–8 s clips (folder input), roughly
+85,000 clips an hour. Hugging Face input is usually limited by download speed.
+
+Clips longer than `--max-duration` (10 s) can still be shortlisted; the review page makes you trim
+them before they can pass. `--reject-longer-than` (30 s) drops very long clips outright.
 
 ## Quick start
 
@@ -28,7 +63,7 @@ On your own data:
 python build.py path/to/clips                       # -> review/index.html
 python build.py path/to/clips --meta clips.csv      # show transcripts / notes next to each clip
 python build.py path/to/clips --copy --out review   # copies audio in, so you can zip and share the folder
-python build.py path/to/clips --min-duration 2      # change the minimum kept length (default 3 s, 0 = off)
+python build.py path/to/clips --min-duration 2 --max-duration 15   # allowed kept length (defaults 3 and 10 s, 0 = off)
 ```
 
 ## Reviewing
@@ -45,10 +80,11 @@ python build.py path/to/clips --min-duration 2      # change the minimum kept le
 
 - **Trimming:** drag the orange handles on a clip's waveform. Trimmed-off parts are shaded, and
   playback only covers what you're keeping, so you hear exactly what will be exported.
-- **Minimum length:** a clip must keep at least `--min-duration` seconds (default **3 s**, a common floor
-  for voice-cloning reference audio) to pass. Anything shorter, whether it was short to begin with or you
-  trimmed it down, is marked **bad automatically** and its ✓ button is disabled. Extend the trim back past
-  the minimum and the automatic "bad" is lifted (a "bad" you chose yourself stays).
+- **Allowed length:** what a clip keeps after trimming must be between `--min-duration` and
+  `--max-duration` (defaults **3 s** and **10 s**, the usual range for voice-cloning reference audio).
+  - Too short, whether it started short or you trimmed it down: **marked bad automatically**, ✓ disabled.
+    Extend the trim back past the minimum and the automatic "bad" is lifted (a "bad" you chose yourself stays).
+  - Too long: ✓ stays disabled until you **trim it down** to the maximum or less.
 - **Click the waveform** to play from that point.
 - **Filters:** All / Unrated / Good / Bad. Use *Unrated* to work through what's left.
 - **Notes are hidden by default** so automatic checks don't bias your ears; tick *show notes* to see them.
@@ -58,7 +94,8 @@ python build.py path/to/clips --min-duration 2      # change the minimum kept le
   merge a colleague's review, or carry progress over to a rebuilt page). Keys can be file paths or clip numbers.
 
 ```json
-{ "good": ["a.wav"], "bad": ["b.wav"], "unrated": ["c.wav"], "trims": { "a.wav": [0.52, 3.62] }, "min_duration": 3.0 }
+{ "good": ["a.wav"], "bad": ["b.wav"], "unrated": ["c.wav"], "trims": { "a.wav": [0.52, 3.62] },
+  "min_duration": 3.0, "max_duration": 10.0 }
 ```
 
 ## Exporting the good clips
@@ -69,8 +106,8 @@ python apply_picks.py picks.json path/to/clips selected/ --include-unrated   # p
 ```
 
 Clips keep their relative paths and audio format; `selected/manifest.csv` records each clip's
-trim and final duration. Clips shorter than the minimum after trimming are skipped (the minimum
-saved in `picks.json`, or `--min-duration`).
+trim and final duration. Clips outside the allowed length after trimming are skipped (the limits
+saved in `picks.json`, or `--min-duration` / `--max-duration`).
 
 ## Metadata file
 
@@ -97,4 +134,6 @@ Different column names? Map them: `--text-col transcript --subtitle-col english 
 
 ## License
 
-MIT
+MIT. The screening models are downloaded from their own projects at run time and keep their own
+licences ([Silero VAD](https://github.com/snakers4/silero-vad/blob/master/LICENSE): MIT;
+[DNSMOS](https://github.com/microsoft/DNS-Challenge): see that repository).

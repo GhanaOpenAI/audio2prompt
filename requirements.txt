@@ -1,2 +1,6 @@
 numpy
 soundfile
+scipy
+onnxruntime
+# optional, for screen.py --hf
+# datasets
