@@ -11,8 +11,9 @@ Every clip is scored with two small ONNX models (CPU only, no PyTorch):
   * DNSMOS (1 MB)       Microsoft's non-intrusive speech-quality predictor: SIG (speech),
                          BAK (background: higher = cleaner) and OVRL (overall), each 1-5
 
-Clips that fail a hard rule (length outside --min/--max-duration after trimming, a pause longer than
---max-pause, too little speech, clipping) are rejected; the rest are ranked by DNSMOS and the top N are
+Length is measured the way the review page presents a clip: with silences removed (ends trimmed,
+pauses of --min-gap or more shortened to --keep-gap). Clips that are then under --min-duration, are too
+little speech, or clip are rejected; the rest are ranked by DNSMOS and the top N are
 written, edge-trimmed, to <out>/audio together with a review page (<out>/index.html, built by build.py).
 <out>/screening.csv has the scores and verdict for every clip scanned.
 """
@@ -35,7 +36,7 @@ import soundfile as sf
 from scipy.signal import resample_poly
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CACHE = os.path.join(os.path.expanduser("~"), ".cache", "audio-clip-reviewer")
+CACHE = os.path.join(os.path.expanduser("~"), ".cache", "audio2prompt")
 MODELS = {
     "silero_vad.onnx": ("https://github.com/snakers4/silero-vad/raw/v5.1.2/src/silero_vad/data/silero_vad.onnx",
                         "2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f"),
@@ -186,14 +187,21 @@ def _init_worker(threads, rules):
 
 
 def _analyse(m):
-    """Worker: 16 kHz mono -> (vad result, (sig, bak, ovrl) of the speech span).
-    DNSMOS (the slow part) is skipped when VAD alone already fails the clip."""
-    res = _W["vad"].analyse(m)
-    if res is None:
+    """Worker: 16 kHz mono -> ((start, end, speech_ratio, longest_pause, clean_len), (sig, bak, ovrl)).
+    clean_len is the length once silences are removed (as the review page will present the clip);
+    speech_ratio is measured on that cleaned version. DNSMOS (the slow part) is skipped when VAD
+    alone already fails the clip."""
+    from apply_picks import silence_plan
+    runs = _W["vad"].speech_runs(m)
+    if not runs:
         return None, None
-    s, e, ratio, pause = res
-    min_dur, pad, max_pause, min_ratio = _W["rules"]
-    if min(len(m) / SR, e + pad) - max(0.0, s - pad) < min_dur or pause > max_pause or ratio < min_ratio:
+    min_dur, pad, max_pause, min_ratio, min_gap, keep = _W["rules"]
+    s, e = runs[0][0], runs[-1][1]
+    pause = max((b[0] - a[1] for a, b in zip(runs[:-1], runs[1:])), default=0.0)
+    clean = sum(y - x for x, y in silence_plan(runs, len(m) / SR, min_gap, keep, pad))
+    ratio = sum(b - a for a, b in runs) / max(clean, 1e-6)
+    res = (s, e, min(ratio, 1.0), pause, clean)
+    if clean < min_dur or (max_pause > 0 and pause > max_pause) or ratio < min_ratio:
         return res, None
     return res, _W["mos"].score(m[int(s * SR): int(e * SR)])
 
@@ -231,13 +239,16 @@ def main():
                          "pass everything else; the review page makes you crop them before they can pass")
     ap.add_argument("--reject-longer-than", type=float, default=30.0,
                     help="hard limit: skip clips longer than this outright (default 30)")
-    ap.add_argument("--max-pause", type=float, default=0.4, help="longest pause allowed inside the speech (default 0.4 s)")
+    ap.add_argument("--max-pause", type=float, default=0.0,
+                    help="reject clips with a pause longer than this (default 0 = off: pauses are shortened instead)")
+    ap.add_argument("--min-gap", type=float, default=0.3, help="pauses at least this long are shortened (s)")
+    ap.add_argument("--keep-gap", type=float, default=0.15, help="pause left in place of a shortened one (s)")
     ap.add_argument("--min-speech-ratio", type=float, default=0.75, help="share of the trimmed clip that must be speech")
     ap.add_argument("--max-clipping", type=float, default=0.001, help="max share of samples at full scale")
     ap.add_argument("--min-ovrl", type=float, default=0.0, help="optional DNSMOS OVRL floor (1-5)")
     ap.add_argument("--rank-by", choices=["ovrl", "bak", "sig", "bak+ovrl"], default="bak+ovrl",
                     help="ranking score among clips that pass (default: bak+ovrl, favours clean backgrounds)")
-    ap.add_argument("--pad", type=float, default=0.15, help="silence kept around the speech when edge-trimming")
+    ap.add_argument("--pad", type=float, default=0.1, help="silence kept before the first / after the last word (s)")
     ap.add_argument("--workers", type=int, default=os.cpu_count() or 1,
                     help="parallel CPU worker processes (default: all cores)")
     a = ap.parse_args()
@@ -268,7 +279,7 @@ def main():
         for key, x, sr, text in source:
             if a.limit and len(rows) >= a.limit:
                 return
-            row = {"key": key, "text": text, "duration": "", "trimmed_duration": "", "speech_ratio": "",
+            row = {"key": key, "text": text, "duration": "", "trimmed_duration": "", "clean_duration": "", "speech_ratio": "",
                    "max_pause": "", "clipping": "", "sig": "", "bak": "", "ovrl": "", "verdict": "", "reason": "",
                    "rank": ""}
             rows.append(row)
@@ -286,7 +297,8 @@ def main():
     import multiprocessing as mp
     pending = prepared()
     with mp.get_context("spawn").Pool(a.workers, initializer=_init_worker,
-                                         initargs=(1, (a.min_duration, a.pad, a.max_pause, a.min_speech_ratio))) as pool:
+                                         initargs=(1, (a.min_duration, a.pad, a.max_pause, a.min_speech_ratio,
+                                                      a.min_gap, a.keep_gap))) as pool:
         while True:
             batch = list(itertools.islice(pending, a.workers * 8))
             if not batch:
@@ -296,18 +308,19 @@ def main():
                     row.update(verdict="reject", reason="no speech")
                     continue
                 dur = len(x) / sr
-                s, e, ratio, pause = res
+                s, e, ratio, pause, clean = res
                 sig, bak, ovrl = scores or ("", "", "")
                 s, e = max(0.0, s - a.pad), min(dur, e + a.pad)
                 clipping = float(np.mean(np.abs(x[int(s * sr): int(e * sr)]) >= 0.999))
-                row.update(trimmed_duration=round(e - s, 2), speech_ratio=round(ratio, 2), max_pause=round(pause, 2),
+                row.update(trimmed_duration=round(e - s, 2), clean_duration=round(clean, 2),
+                           speech_ratio=round(ratio, 2), max_pause=round(pause, 2),
                            clipping=round(clipping, 5))
                 if scores:
                     row.update(sig=round(sig, 2), bak=round(bak, 2), ovrl=round(ovrl, 2))
                 why = []
-                if e - s < a.min_duration:
-                    why.append(f"under {a.min_duration:g}s")
-                if pause > a.max_pause:
+                if clean < a.min_duration:
+                    why.append(f"under {a.min_duration:g}s without silences")
+                if a.max_pause > 0 and pause > a.max_pause:
                     why.append(f"pause {pause:.2f}s")
                 if ratio < a.min_speech_ratio:
                     why.append(f"speech {ratio:.0%}")
@@ -340,7 +353,7 @@ def main():
                      "tags": [f"rank {rank}", f"OVRL {row['ovrl']}", f"BAK {row['bak']}"],
                      "notes": (f"DNSMOS SIG {row['sig']} · BAK {row['bak']} · OVRL {row['ovrl']} · "
                                f"speech {row['speech_ratio']:.0%} · longest pause {row['max_pause']}s · "
-                               f"trimmed {row['duration']}s → {row['trimmed_duration']}s")})
+                               f"{row['clean_duration']}s of speech once silences are removed")})
     for r in rows:
         if r["verdict"] == "pass" and not r["rank"]:
             r["verdict"] = "pass (not in top)"
@@ -361,7 +374,8 @@ def main():
         title = a.title or f"Shortlist: top {len(meta)} of {len(rows)} from {origin}"
         subprocess.run([sys.executable, os.path.join(HERE, "build.py"), os.path.join(a.out, "audio"),
                         "--meta", os.path.join(a.out, "shortlist.json"), "--out", a.out, "--title", title,
-                        "--min-duration", str(a.min_duration), "--max-duration", str(a.max_duration)], check=True)
+                        "--min-duration", str(a.min_duration), "--max-duration", str(a.max_duration),
+                        "--min-gap", str(a.min_gap), "--keep-gap", str(a.keep_gap), "--edge-pad", str(a.pad)], check=True)
 
 
 if __name__ == "__main__":

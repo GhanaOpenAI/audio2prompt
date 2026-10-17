@@ -32,6 +32,21 @@ def keep_segments(start, end, cuts):
     return segs
 
 
+def silence_plan(speech, dur, min_gap=0.3, keep=0.15, pad=0.1):
+    """Speech regions [(a, b), ...] -> the (a, b) pieces to keep once silences are removed:
+    silent ends trimmed to `pad`, every inner pause of `min_gap` or more shortened to `keep`."""
+    if not speech:
+        return []
+    start, end = max(0.0, speech[0][0] - pad), min(dur, speech[-1][1] + pad)
+    segs, pos = [], start
+    for (_, a), (b, _) in zip(speech[:-1], speech[1:]):
+        if b - a >= min_gap:
+            segs.append((pos, a + keep / 2))
+            pos = b - keep / 2
+    segs.append((pos, end))
+    return segs
+
+
 def splice(data, sr, segs):
     """Concatenate the kept pieces with a short equal-power crossfade at each join."""
     out = None

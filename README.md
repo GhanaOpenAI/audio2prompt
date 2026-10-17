@@ -1,11 +1,13 @@
-# audio-clip-reviewer
+# audio2prompt
 
-Find the best speech clips in a large pool, then check them by ear:
+Turn a large pool of speech (a folder or a Hugging Face dataset) into clean, ear-checked prompt clips
+for zero-shot TTS / voice cloning:
 
 1. **Screen** (`screen.py`): score every clip from a folder or a Hugging Face dataset with two tiny
    CPU models and shortlist the top N (default 200).
-2. **Review** (`build.py`): listen to the shortlist in a single local HTML page, mark each clip
-   **good** or **bad**, and **trim** junk off the start or end.
+2. **Review** (`build.py`): silences are removed first and clips without enough speech are dropped;
+   then you listen in a single local HTML page, mark each clip **good** or **bad**, and trim or cut
+   anything still wrong.
 3. **Export** (`apply_picks.py`): write out the good clips with your trims and cuts applied.
 
 Built for curating speech datasets (picking clean voice-cloning reference clips, spot-checking
@@ -24,16 +26,17 @@ python screen.py --hf user/dataset --split train --audio-column audio --text-col
 ```
 
 Each clip goes through two small ONNX models, with no PyTorch and no GPU. They're downloaded once to
-`~/.cache/audio-clip-reviewer` and checksum-verified:
+`~/.cache/audio2prompt` and checksum-verified:
 
 | model | size | what it measures |
 |---|---|---|
 | [Silero VAD](https://github.com/snakers4/silero-vad) v5 | 2.3 MB | where the speech is: trims silence off both ends, longest pause inside the speech, share of the clip that is speech |
 | [DNSMOS](https://github.com/microsoft/DNS-Challenge/tree/master/DNSMOS) P.835 | 1.2 MB | predicted listener scores (1–5): **SIG** speech quality, **BAK** background (higher = cleaner), **OVRL** overall |
 
-Clips are **rejected** if, after trimming the silent ends, they are shorter than `--min-duration`
-(3 s), have a pause longer than `--max-pause` (0.4 s), are less than `--min-speech-ratio` (75 %)
-speech, or clip. DNSMOS only runs on clips that survive the VAD checks, which is what keeps it fast.
+Length is measured **without silences**, the way the review page presents a clip: silent ends
+trimmed and every pause of `--min-gap` 0.3 s or more shortened to `--keep-gap` 0.15 s. Clips are
+**rejected** if that cleaned length is under `--min-duration` (3 s), if less than `--min-speech-ratio`
+(75 %) of it is speech, or if they clip. DNSMOS only runs on clips that survive the VAD checks, which is what keeps it fast.
 The rest are **ranked** by `--rank-by` (default `bak+ovrl`, favouring clean backgrounds) and the top
 `--top` are written edge-trimmed to `shortlist/audio/` with a ready-to-use review page.
 `screening.csv` lists every clip scanned with its scores and the reason for any rejection.
@@ -47,8 +50,8 @@ them before they can pass. `--reject-longer-than` (30 s) drops very long clips o
 ## Quick start
 
 ```bash
-git clone https://github.com/GhanaOpenAI/audio-clip-reviewer.git
-cd audio-clip-reviewer
+git clone https://github.com/GhanaOpenAI/audio2prompt.git
+cd audio2prompt
 pip install -r requirements.txt          # numpy, soundfile
 
 # try it on the synthetic demo clips
@@ -82,13 +85,18 @@ python build.py path/to/clips --min-duration 2 --max-duration 15   # allowed kep
 | `Esc` | drop the selection |
 | `X` | undo all trims and cuts on the clip |
 
-- **Silences are removed automatically.** `build.py` finds the speech in every clip with Silero VAD
-  (CPU, the same model `screen.py` uses). When the page opens, every clip you haven't edited yourself
-  has its silent ends trimmed (keeping `--edge-pad` 0.1 s) and every pause of `--min-gap` 0.3 s or more
-  *in the middle* shortened to a natural `--keep-gap` 0.15 s. You hear the result straight away.
-  `X` undoes it for a clip, and the undo is remembered across reloads. Any silences not removed show as
-  dotted boxes with a "remove N silences" link (or press `A`). **Remove silences in all** applies them to
-  every clip. Use `--no-auto-silence` to only suggest, or `--silences off` to skip detection.
+- **You review clips with their silences already removed.** `build.py` finds the speech in every clip
+  with Silero VAD (CPU, the same model `screen.py` uses), trims the silent ends (keeping `--edge-pad`
+  0.1 s) and shortens every pause of `--min-gap` 0.3 s or more *in the middle* to a natural
+  `--keep-gap` 0.15 s. The cleaned audio is written to `<out>/clips/` and that's what the page shows
+  and plays.
+- **Only viable clips are shown.** A clip's real length is its length without silences. Clips under
+  `--min-duration` once silences are removed, or with no speech at all, are left out of the page
+  entirely; `<out>/precut.csv` lists every clip with its original and cleaned length and why it was
+  hidden. Clips over `--max-duration` are shown, but must be trimmed before they can pass.
+- Prefer the original audio? `--no-precut` shows it unmodified and removes silences in the page
+  instead (each detected silence is a dotted box; `A` or "remove N silences" applies them, `X` undoes).
+  `--silences off` skips detection altogether.
 - **Trimming the ends:** drag the orange handles on a clip's waveform. Trimmed-off parts are shaded.
 - **Cutting a gap out of the middle:** drag across the waveform (away from the orange handles) to
   select a range, such as a long pause, adjust its blue edges if needed, then press `Delete` or `C`.
@@ -118,8 +126,9 @@ python build.py path/to/clips --min-duration 2 --max-duration 15   # allowed kep
 ## Exporting the good clips
 
 ```bash
-python apply_picks.py picks.json path/to/clips selected/                     # good clips, trimmed
-python apply_picks.py picks.json path/to/clips selected/ --include-unrated   # plus the ones you skipped
+python apply_picks.py picks.json review/clips selected/                      # good clips, trimmed
+python apply_picks.py picks.json review/clips selected/ --include-unrated    # plus the ones you skipped
+# (pass the folder the page played from: <out>/clips, or your original folder with --no-precut)
 ```
 
 Clips keep their relative paths and audio format; `selected/manifest.csv` records each clip's
