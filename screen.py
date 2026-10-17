@@ -90,8 +90,8 @@ class SileroVAD:
             context = chunk[:, -self.CONTEXT:]
         return out
 
-    def analyse(self, x, threshold=0.5, min_speech=0.1):
-        """-> (start_s, end_s, speech_ratio_within, longest_internal_pause_s) or None if no speech."""
+    def speech_runs(self, x, threshold=0.5, min_speech=0.1):
+        """Speech regions of 16 kHz mono audio as a list of (start_s, end_s)."""
         fd = self.FRAME / SR
         p = self.probs(x)
         on = p >= threshold
@@ -110,11 +110,16 @@ class SileroVAD:
                 i = j
             else:
                 i += 1
+        return [(a * fd, b * fd) for a, b in runs]
+
+    def analyse(self, x, threshold=0.5, min_speech=0.1):
+        """-> (start_s, end_s, speech_ratio_within, longest_internal_pause_s) or None if no speech."""
+        runs = self.speech_runs(x, threshold, min_speech)
         if not runs:
             return None
-        start, end = runs[0][0] * fd, runs[-1][1] * fd
-        gaps = [(runs[k + 1][0] - runs[k][1]) * fd for k in range(len(runs) - 1)]
-        speech = sum((b - a) * fd for a, b in runs)
+        start, end = runs[0][0], runs[-1][1]
+        gaps = [runs[k + 1][0] - runs[k][1] for k in range(len(runs) - 1)]
+        speech = sum(b - a for a, b in runs)
         return start, end, speech / max(end - start, 1e-6), max(gaps, default=0.0)
 
 

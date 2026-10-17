@@ -76,11 +76,19 @@ python build.py path/to/clips --min-duration 2 --max-duration 15   # allowed kep
 | `↓` `J` / `↑` `K` | next / previous clip |
 | `R` | replay |
 | `[` / `]` | set trim start / end at the playhead |
+| `A` | remove the detected silences in this clip (if you undid the automatic pass) |
 | `Delete` / `C` | cut the selected range out of the clip |
 | `S` | play just the selected range |
 | `Esc` | drop the selection |
 | `X` | undo all trims and cuts on the clip |
 
+- **Silences are removed automatically.** `build.py` finds the speech in every clip with Silero VAD
+  (CPU, the same model `screen.py` uses). When the page opens, every clip you haven't edited yourself
+  has its silent ends trimmed (keeping `--edge-pad` 0.1 s) and every pause of `--min-gap` 0.3 s or more
+  *in the middle* shortened to a natural `--keep-gap` 0.15 s. You hear the result straight away.
+  `X` undoes it for a clip, and the undo is remembered across reloads. Any silences not removed show as
+  dotted boxes with a "remove N silences" link (or press `A`). **Remove silences in all** applies them to
+  every clip. Use `--no-auto-silence` to only suggest, or `--silences off` to skip detection.
 - **Trimming the ends:** drag the orange handles on a clip's waveform. Trimmed-off parts are shaded.
 - **Cutting a gap out of the middle:** drag across the waveform (away from the orange handles) to
   select a range, such as a long pause, adjust its blue edges if needed, then press `Delete` or `C`.

@@ -45,8 +45,52 @@ def load_meta(path):
         return data if isinstance(data, list) else [dict(v, file=k) for k, v in data.items()]
 
 
-def peaks(path, n=300):
+def speech_regions_energy(mono, sr, floor_db=-35.0, min_speech=0.1):
+    """Fallback speech detector: 20 ms frames louder than (peak + floor_db)."""
+    n = int(0.02 * sr)
+    if len(mono) < n:
+        return []
+    fr = mono[: len(mono) // n * n].reshape(-1, n)
+    db = 20 * np.log10(np.sqrt((fr ** 2).mean(axis=1)) + 1e-9)
+    on = db > db.max() + floor_db
+    runs, i = [], 0
+    while i < len(on):
+        if on[i]:
+            j = i
+            while j < len(on) and on[j]:
+                j += 1
+            if (j - i) * 0.02 >= min_speech:
+                runs.append((i * 0.02, j * 0.02))
+            i = j
+        else:
+            i += 1
+    return runs
+
+
+class SpeechDetector:
+    """Silero VAD (via screen.py, CPU/ONNX) when available, else an energy threshold."""
+
+    def __init__(self, mode):
+        self.mode, self.vad = mode, None
+        if mode == "vad":
+            try:
+                sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                import screen
+                self.screen, self.vad = screen, screen.SileroVAD(threads=max(1, (os.cpu_count() or 2) // 2))
+            except Exception as e:  # onnxruntime/scipy missing or no network for the model
+                print(f"Silero VAD unavailable ({e}); using the energy detector for silences", file=sys.stderr)
+                self.mode = "energy"
+
+    def regions(self, data, sr):
+        mono = data.mean(axis=1)
+        if self.mode == "vad":
+            return self.vad.speech_runs(self.screen.to_mono16k(data, sr))
+        return speech_regions_energy(mono, sr)
+
+
+def peaks(path, n=300, detector=None):
     data, sr = sf.read(path, dtype="float32", always_2d=True)
+    speech = [[round(a, 3), round(b, 3)] for a, b in detector.regions(data, sr)] if detector else None
     x = np.abs(data).max(axis=1)
     dur = len(x) / sr
     if len(x) < n:
@@ -54,7 +98,7 @@ def peaks(path, n=300):
     b = len(x) // n
     p = x[: b * n].reshape(n, b).max(axis=1)
     p = p / (p.max() + 1e-9)
-    return round(dur, 3), [round(float(v), 2) for v in p]
+    return round(dur, 3), [round(float(v), 2) for v in p], speech
 
 
 def main():
@@ -71,6 +115,13 @@ def main():
                          "marked good (default: 10.0, 0 = no maximum)")
     ap.add_argument("--copy", action="store_true",
                     help="copy the audio into <out>/audio so the folder is self-contained (default: link by relative path)")
+    ap.add_argument("--silences", choices=["vad", "energy", "off"], default="vad",
+                    help="detect silences for automatic removal: Silero VAD (default), an energy threshold, or off")
+    ap.add_argument("--no-auto-silence", action="store_true",
+                    help="detect silences but don't remove them automatically when the page opens")
+    ap.add_argument("--min-gap", type=float, default=0.3, help="inner silences at least this long are shortened (s)")
+    ap.add_argument("--keep-gap", type=float, default=0.15, help="pause left in place of a removed silence (s)")
+    ap.add_argument("--edge-pad", type=float, default=0.1, help="silence kept before the first / after the last word (s)")
     ap.add_argument("--file-col", default="file", help="meta column holding the file name / relative path")
     ap.add_argument("--text-col", default="text", help="meta column shown in bold (e.g. transcript)")
     ap.add_argument("--subtitle-col", default="subtitle", help="meta column shown under the text (e.g. translation)")
@@ -93,11 +144,12 @@ def main():
                 meta.setdefault(os.path.basename(key), row)
 
     os.makedirs(out, exist_ok=True)
+    detector = SpeechDetector(a.silences) if a.silences != "off" else None
     clips, skipped = [], []
     for n, rel in enumerate(files, 1):
         path = os.path.join(audio_dir, rel)
         try:
-            dur, pk = peaks(path)
+            dur, pk, speech = peaks(path, detector=detector)
         except Exception as e:  # unreadable / unsupported codec
             skipped.append(f"{rel}: {e}")
             continue
@@ -116,7 +168,7 @@ def main():
             "n": n, "file": rel.replace(os.sep, "/"), "src": src.replace(os.sep, "/"),
             "text": str(row.get(a.text_col) or ""), "subtitle": str(row.get(a.subtitle_col) or ""),
             "tags": [str(t) for t in tags], "notes": str(row.get(a.notes_col) or ""),
-            "dur": dur, "peaks": pk,
+            "dur": dur, "peaks": pk, "speech": speech,
         })
 
     store_id = hashlib.sha1((a.title + "\n" + "\n".join(c["file"] for c in clips)).encode()).hexdigest()[:12]
@@ -125,7 +177,9 @@ def main():
     html = (open(TEMPLATE, encoding="utf-8").read()
             .replace("__TITLE__", title).replace("__CLIPS__", data).replace("__STORE_ID__", json.dumps(store_id))
             .replace("__MIN_DURATION__", json.dumps(max(0.0, a.min_duration)))
-            .replace("__MAX_DURATION__", json.dumps(max(0.0, a.max_duration))))
+            .replace("__MAX_DURATION__", json.dumps(max(0.0, a.max_duration)))
+            .replace("__SILENCE__", json.dumps({"auto": detector is not None and not a.no_auto_silence,
+                                                "min_gap": a.min_gap, "keep": a.keep_gap, "pad": a.edge_pad})))
     with open(os.path.join(out, "index.html"), "w", encoding="utf-8") as f:
         f.write(html)
 

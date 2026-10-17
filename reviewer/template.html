@@ -93,6 +93,7 @@
     <label class="toggle" id="notesToggle"><input type="checkbox" id="showNotes"> show notes</label>
     <label class="toggle"><input type="checkbox" id="autoNext" checked> auto-play next</label>
     <span class="spacer"></span>
+    <button class="btn" id="silAll" title="Shorten long pauses and trim silent ends in every clip">Remove silences in all</button>
     <button class="btn" id="import">Load picks</button>
     <input type="file" id="importFile" accept=".json,application/json" hidden>
     <button class="btn" id="reset">Reset</button>
@@ -101,7 +102,7 @@
   <div class="keys"><kbd>Space</kbd> play/pause · <kbd>G</kbd> good · <kbd>B</kbd> bad · <kbd>U</kbd> clear · <kbd>↓</kbd>/<kbd>J</kbd> next · <kbd>↑</kbd>/<kbd>K</kbd> previous · <kbd>R</kbd> replay ·
     trim ends: drag the orange handles, or <kbd>[</kbd> start / <kbd>]</kbd> end at the playhead ·
     cut a gap: drag across the waveform to select it, then <kbd>Del</kbd>/<kbd>C</kbd> (<kbd>S</kbd> plays the selection, <kbd>Esc</kbd> drops it; click a cut to restore it) ·
-    <kbd>X</kbd> undo all trims and cuts · click the waveform to play from there</div>
+    <kbd>A</kbd> remove detected silences (dotted boxes) · <kbd>X</kbd> undo all trims and cuts · click the waveform to play from there</div>
 </header>
 <main id="list"></main>
 <audio id="player" preload="auto"></audio>
@@ -111,14 +112,17 @@
 const CLIPS = __CLIPS__;
 const MIN_DUR = __MIN_DURATION__;  // seconds; clips kept shorter than this are bad automatically (0 = no minimum)
 const MAX_DUR = __MAX_DURATION__;  // seconds; clips kept longer than this must be cropped before they can pass (0 = no maximum)
+const SIL = __SILENCE__;  // {auto, min_gap, keep, pad}: automatic silence removal settings
 const STORE = "audio-clip-reviewer:" + __STORE_ID__;
 const load = k => { try { return JSON.parse(localStorage.getItem(STORE + k) || "{}"); } catch (e) { return {}; } };
 let ratings = load(":ratings"), trims = load(":trims"), autoBad = load(":autobad"), cuts = load(":cuts");
+let silDone = load(":silence");  // clips whose silences were already handled automatically (so undo sticks)
 let sel = null;  // {file, a, b}: a range selected on the current clip, waiting to be cut
 const save = () => {
   try {
     localStorage.setItem(STORE + ":ratings", JSON.stringify(ratings)); localStorage.setItem(STORE + ":trims", JSON.stringify(trims));
     localStorage.setItem(STORE + ":autobad", JSON.stringify(autoBad)); localStorage.setItem(STORE + ":cuts", JSON.stringify(cuts));
+    localStorage.setItem(STORE + ":silence", JSON.stringify(silDone));
   } catch (e) {}
 };
 
@@ -135,6 +139,49 @@ const kept = c => {
 };
 const edited = c => !!trims[c.file] || cutsOf(c).length > 0;
 const cutAt = (c, t) => cutsOf(c).find(([a, b]) => t >= a && t < b);
+
+// ---- detected silences -----------------------------------------------------
+// From the speech regions found at build time: trim the silent ends (keeping SIL.pad) and shorten
+// every inner pause of SIL.min_gap or more to SIL.keep seconds.
+function suggest(c) {
+  const sp = c.speech || [];
+  if (!sp.length) return { trim: null, cuts: [] };
+  const trim = [Math.max(0, sp[0][0] - SIL.pad), Math.min(c.dur, sp[sp.length - 1][1] + SIL.pad)];
+  const gaps = [];
+  for (let k = 0; k + 1 < sp.length; k++) {
+    const a = sp[k][1], b = sp[k + 1][0];
+    if (b - a >= SIL.min_gap) gaps.push([+(a + SIL.keep / 2).toFixed(3), +(b - SIL.keep / 2).toFixed(3)]);
+  }
+  return { trim, cuts: gaps };
+}
+const covered = (c, [a, b]) => cutsOf(c).some(([x, y]) => Math.min(b, y) - Math.max(a, x) >= 0.8 * (b - a));
+// Suggestions not applied yet: silent ends still inside the trim window, and gaps not already cut.
+function pendingOf(c) {
+  const sg = suggest(c), [s, e] = trimOf(c), out = { lead: null, tail: null, cuts: [] };
+  if (sg.trim) {
+    if (sg.trim[0] > s + 0.05) out.lead = [s, sg.trim[0]];
+    if (sg.trim[1] < e - 0.05) out.tail = [sg.trim[1], e];
+  }
+  out.cuts = sg.cuts.filter(g => g[0] >= s && g[1] <= e && !covered(c, g));
+  out.n = (out.lead ? 1 : 0) + (out.tail ? 1 : 0) + out.cuts.length;
+  return out;
+}
+function removeSilences(c) {
+  const pd = pendingOf(c);
+  silDone[c.file] = true;
+  if (!pd.n) return 0;
+  const [s, e] = trimOf(c), ns = pd.lead ? pd.lead[1] : s, ne = pd.tail ? pd.tail[0] : e;
+  if (ns !== s || ne !== e) setTrim(c, ns, ne);
+  if (pd.cuts.length) {
+    cuts[c.file] = [...cutsOf(c), ...pd.cuts].sort((x, y) => x[0] - y[0]).reduce((acc, [a, b]) => {
+      const last = acc[acc.length - 1];
+      if (last && a <= last[1] + 0.005) last[1] = Math.max(last[1], b); else acc.push([a, b]);
+      return acc;
+    }, []);
+  }
+  enforce(c);
+  return pd.n;
+}
 const tooShort = c => MIN_DUR > 0 && kept(c) < MIN_DUR - 1e-6;
 const tooLong = c => MAX_DUR > 0 && kept(c) > MAX_DUR + 1e-6;
 const cantPass = c => tooShort(c) || tooLong(c);
@@ -165,6 +212,7 @@ function metaHtml(c) {
   return `<span class="num">#${c.n}</span><span>${esc(c.file)}</span>` +
     (edited(c) ? `<span class="trimmed num">${parts.join(", ")}: ${fmt(kept(c))} kept of ${fmt(c.dur)}</span><button data-act="untrim">undo trims &amp; cuts</button>`
                : `<span class="num">${fmt(c.dur)}</span>`) +
+    ((n => n ? `<button data-act="silence">remove ${n} silence${n > 1 ? "s" : ""}</button>` : "")(pendingOf(c).n)) +
     (tooShort(c) ? `<span class="short">too short: under ${fmt(MIN_DUR)}${autoBad[c.file] ? ", marked bad automatically" : ""}</span>` : "") +
     (tooLong(c) ? `<span class="short">too long: trim or cut it to ${fmt(MAX_DUR)} or less to pass</span>` : "") +
     (c.tags || []).map(t => `<span>${esc(t)}</span>`).join("");
@@ -190,6 +238,12 @@ function drawWave(i) {
   for (const [a, b] of cutsOf(c)) {  // cut ranges: crossed out
     ctx.beginPath(); ctx.moveTo(X(a), 2); ctx.lineTo(X(b), h - 2); ctx.moveTo(X(a), h - 2); ctx.lineTo(X(b), 2); ctx.stroke();
     ctx.strokeRect(X(a) + .5, .5, X(b) - X(a) - 1, h - 1);
+  }
+  const pd = pendingOf(c);  // detected silences not removed yet: dotted boxes
+  if (pd.n) {
+    ctx.save(); ctx.setLineDash([3, 3]); ctx.strokeStyle = css("--sel-edge"); ctx.lineWidth = 1;
+    for (const [a, b] of [pd.lead, pd.tail, ...pd.cuts].filter(Boolean)) ctx.strokeRect(X(a) + .5, 1.5, X(b) - X(a) - 1, h - 3);
+    ctx.restore();
   }
   if (sel && sel.file === c.file) {  // pending selection
     const xa = X(Math.min(sel.a, sel.b)), xb = X(Math.max(sel.a, sel.b));
@@ -316,6 +370,7 @@ function render() {
     row.querySelector(".b").onclick = () => { select(i); rate("bad"); };
     row.querySelector(".meta").addEventListener("click", ev => {
       if (ev.target.dataset.act === "untrim") { select(i); untrim(); }
+      if (ev.target.dataset.act === "silence") { select(i); silenceCurrent(); }
     });
     attachWave(row, i);
     list.appendChild(row);
@@ -413,6 +468,11 @@ function trimAtPlayhead(which) {
   const [s, e] = trimOf(c), t = player.currentTime;
   if (which === "s" ? setTrim(c, t, e) : setTrim(c, s, t)) { drawWave(current); refreshMeta(current); }
 }
+function silenceCurrent() {
+  const c = view[current]; if (!c) return;
+  const n = removeSilences(c); save(); drawWave(current); refreshMeta(current);
+  toast(n ? `Removed ${n} silence${n > 1 ? "s" : ""}: ${fmt(kept(c))} kept` : "No silences left to remove");
+}
 function untrim() {
   const c = view[current]; if (!c) return;
   delete trims[c.file]; delete cuts[c.file]; if (sel && sel.file === c.file) sel = null;
@@ -435,6 +495,7 @@ document.addEventListener("keydown", e => {
   else if (k === "x") untrim();
   else if (k === "delete" || k === "backspace" || k === "c") { e.preventDefault(); cutSelection(); }
   else if (k === "s") playSelection();
+  else if (k === "a") silenceCurrent();
   else if (k === "escape" && sel) { sel = null; drawWave(current); }
 });
 
@@ -444,7 +505,11 @@ document.querySelectorAll(".chip").forEach(ch => ch.onclick = () => {
 });
 document.getElementById("showNotes").onchange = e => document.body.classList.toggle("blind", !e.target.checked);
 document.getElementById("reset").onclick = () => {
-  if (confirm("Clear all your ratings, trims and cuts?")) { ratings = {}; trims = {}; cuts = {}; autoBad = {}; sel = null; CLIPS.forEach(enforce); save(); render(); }
+  if (confirm("Clear all your ratings, trims and cuts?")) {
+    ratings = {}; trims = {}; cuts = {}; autoBad = {}; silDone = {}; sel = null;
+    if (SIL.auto) CLIPS.forEach(removeSilences);
+    CLIPS.forEach(enforce); save(); render();
+  }
 };
 document.getElementById("export").onclick = () => {
   const good = CLIPS.filter(c => ratings[c.file] === "good").map(c => c.file);
@@ -467,6 +532,22 @@ document.getElementById("importFile").onchange = async e => {
   CLIPS.forEach(enforce); save(); render(); e.target.value = "";
   toast(`Loaded ${n} ratings/trims/cuts`);
 };
+document.getElementById("silAll").onclick = () => {
+  const n = CLIPS.reduce((acc, c) => acc + removeSilences(c), 0);
+  save(); render(); toast(n ? `Removed ${n} silences across all clips` : "No silences left to remove");
+};
+if (!CLIPS.some(c => c.speech)) document.getElementById("silAll").style.display = "none";
+// Automatic silence removal on first load, for clips you haven't trimmed or cut yourself.
+if (SIL.auto) {
+  let n = 0;
+  for (const c of CLIPS) {
+    if (silDone[c.file]) continue;
+    if (edited(c)) { silDone[c.file] = true; continue; }
+    if (removeSilences(c)) n++;
+  }
+  save();
+  if (n) setTimeout(() => toast(`Silences removed automatically in ${n} clips (X undoes it per clip)`), 400);
+}
 document.getElementById("minNote").textContent =
   (MIN_DUR > 0 ? ` · min ${fmt(MIN_DUR)}` : "") + (MAX_DUR > 0 ? ` · max ${fmt(MAX_DUR)}` : "");
 CLIPS.forEach(enforce); save();
