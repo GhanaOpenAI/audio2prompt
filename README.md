@@ -28,6 +28,7 @@ On your own data:
 python build.py path/to/clips                       # -> review/index.html
 python build.py path/to/clips --meta clips.csv      # show transcripts / notes next to each clip
 python build.py path/to/clips --copy --out review   # copies audio in, so you can zip and share the folder
+python build.py path/to/clips --min-duration 2      # change the minimum kept length (default 3 s, 0 = off)
 ```
 
 ## Reviewing
@@ -44,15 +45,20 @@ python build.py path/to/clips --copy --out review   # copies audio in, so you ca
 
 - **Trimming:** drag the orange handles on a clip's waveform. Trimmed-off parts are shaded, and
   playback only covers what you're keeping, so you hear exactly what will be exported.
+- **Minimum length:** a clip must keep at least `--min-duration` seconds (default **3 s**, a common floor
+  for voice-cloning reference audio) to pass. Anything shorter, whether it was short to begin with or you
+  trimmed it down, is marked **bad automatically** and its ✓ button is disabled. Extend the trim back past
+  the minimum and the automatic "bad" is lifted (a "bad" you chose yourself stays).
 - **Click the waveform** to play from that point.
 - **Filters:** All / Unrated / Good / Bad. Use *Unrated* to work through what's left.
 - **Notes are hidden by default** so automatic checks don't bias your ears; tick *show notes* to see them.
 - **Progress is saved in the browser** (localStorage) as you go, so you can close the page and come back.
   Rebuilding with the same title and files keeps your progress.
-- **Download picks** saves `picks.json`:
+- **Download picks** saves `picks.json`; **Load picks** reads one back in (to resume on another machine,
+  merge a colleague's review, or carry progress over to a rebuilt page). Keys can be file paths or clip numbers.
 
 ```json
-{ "good": ["a.wav"], "bad": ["b.wav"], "unrated": ["c.wav"], "trims": { "a.wav": [0.52, 2.62] } }
+{ "good": ["a.wav"], "bad": ["b.wav"], "unrated": ["c.wav"], "trims": { "a.wav": [0.52, 3.62] }, "min_duration": 3.0 }
 ```
 
 ## Exporting the good clips
@@ -63,7 +69,8 @@ python apply_picks.py picks.json path/to/clips selected/ --include-unrated   # p
 ```
 
 Clips keep their relative paths and audio format; `selected/manifest.csv` records each clip's
-trim and final duration.
+trim and final duration. Clips shorter than the minimum after trimming are skipped (the minimum
+saved in `picks.json`, or `--min-duration`).
 
 ## Metadata file
 

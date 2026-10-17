@@ -4,6 +4,7 @@
     python build.py path/to/audio                              # every audio file under the folder
     python build.py path/to/audio --meta clips.csv             # add text / notes per clip
     python build.py path/to/audio --out review --copy          # portable folder you can zip and share
+    python build.py path/to/audio --min-duration 2              # clips under 2 s (after trimming) can't pass
 
 Open <out>/index.html in a browser. Ratings and trims are saved in the browser as you go;
 "Download picks" exports them as picks.json for apply_picks.py.
@@ -62,6 +63,9 @@ def main():
     ap.add_argument("--meta", help="optional .csv / .json / .jsonl with one row per clip")
     ap.add_argument("--out", default="review", help="output folder (default: review)")
     ap.add_argument("--title", default="Audio clip review")
+    ap.add_argument("--min-duration", type=float, default=3.0,
+                    help="seconds a clip must keep after trimming to be markable good; shorter clips are "
+                         "marked bad automatically (default: 3.0, 0 = no minimum)")
     ap.add_argument("--copy", action="store_true",
                     help="copy the audio into <out>/audio so the folder is self-contained (default: link by relative path)")
     ap.add_argument("--file-col", default="file", help="meta column holding the file name / relative path")
@@ -116,11 +120,15 @@ def main():
     data = json.dumps(clips, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
     title = a.title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     html = (open(TEMPLATE, encoding="utf-8").read()
-            .replace("__TITLE__", title).replace("__CLIPS__", data).replace("__STORE_ID__", json.dumps(store_id)))
+            .replace("__TITLE__", title).replace("__CLIPS__", data).replace("__STORE_ID__", json.dumps(store_id))
+            .replace("__MIN_DURATION__", json.dumps(max(0.0, a.min_duration))))
     with open(os.path.join(out, "index.html"), "w", encoding="utf-8") as f:
         f.write(html)
 
     print(f"{len(clips)} clips -> {os.path.join(out, 'index.html')}")
+    if a.min_duration > 0:
+        short = sum(1 for c in clips if c["dur"] < a.min_duration)
+        print(f"minimum kept length {a.min_duration:g}s: {short} clips are already shorter and start as bad")
     if a.meta:
         print(f"metadata matched for {sum(1 for c in clips if c['text'] or c['subtitle'] or c['notes'] or c['tags'])} clips")
     for s in skipped:
