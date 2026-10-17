@@ -74,6 +74,13 @@
   .sugg button, .dlg-actions button, .dlg-head button { border: 1px solid var(--line); background: var(--surface); color: var(--ink);
     border-radius: 6px; padding: 4px 10px; font: inherit; font-size: 13px; cursor: pointer; }
   .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .hf-step { display: flex; flex-direction: column; gap: 8px; }
+  .hf-row { display: flex; gap: 6px; align-items: center; }
+  .hf-row input, .hf-row select { flex: 1; font: inherit; font-size: 14px; color: var(--ink); background: var(--surface);
+    border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; min-width: 0; }
+  .hf-row select { flex: 0 1 auto; }
+  .hf-row button { border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+    border-radius: 6px; padding: 5px 12px; font: inherit; font-size: 13px; cursor: pointer; }
   .dlg-actions .primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   .charpad { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }
   .charpad button { min-width: 30px; height: 30px; padding: 0 6px; border: 1px solid var(--line); border-radius: 6px;
@@ -134,7 +141,10 @@
     <button class="btn" id="import">Load picks</button>
     <input type="file" id="importFile" accept=".json,application/json" hidden>
     <button class="btn" id="reset">Reset</button>
-    <button class="btn primary" id="export">Download picks</button>
+    <button class="btn" id="export">Download picks</button>
+    <button class="btn" id="txAll" hidden title="Send every passed clip that has no transcript yet to Gemini">✨ Transcribe passed clips</button>
+    <button class="btn" id="dlData" hidden title="Good clips (trims and cuts applied) + metadata.csv, as a zip">⬇ Download dataset</button>
+    <button class="btn primary" id="pushHF" hidden title="Push the good clips with their transcripts and labels to a Hugging Face dataset">🤗 Push to HF</button>
   </div>
   <div class="keys"><kbd>Space</kbd> play/pause · <kbd>G</kbd> good · <kbd>B</kbd> bad · <kbd>U</kbd> clear · <kbd>↓</kbd>/<kbd>J</kbd> next · <kbd>↑</kbd>/<kbd>K</kbd> previous · <kbd>R</kbd> replay ·
     trim ends: drag the orange handles, or <kbd>[</kbd> start / <kbd>]</kbd> end at the playhead ·
@@ -145,6 +155,25 @@
 <audio id="player" preload="auto"></audio>
 <div class="toast" id="toast"></div>
 <datalist id="labelOptions"></datalist>
+<dialog id="hfDlg">
+  <form method="dialog">
+    <div class="dlg-head"><b>Push the dataset to Hugging Face</b></div>
+    <div class="sugg" id="hfInfo"></div>
+    <div class="hf-step" id="hfTokenStep">
+      <label class="sugg">Hugging Face token (with write access, from huggingface.co/settings/tokens)
+        <span class="hf-row"><input type="password" id="hfToken" placeholder="hf_…" autocomplete="off" spellcheck="false">
+        <button type="button" id="hfConnect">Connect</button></span></label>
+      <div class="sugg" id="hfMachine"></div>
+    </div>
+    <div class="hf-step" id="hfRepoStep" hidden>
+      <div class="sugg" id="hfWho"></div>
+      <span class="hf-row"><select id="hfOwner" title="Your account or an organization"></select><span>/</span><input id="hfName" spellcheck="false" title="Dataset name"></span>
+      <label class="sugg" style="flex-direction:row;align-items:center"><input type="checkbox" id="hfPrivate" checked> Private</label>
+    </div>
+    <div class="sugg" id="hfResult"></div>
+    <div class="dlg-actions"><button value="cancel">Close</button><button type="button" class="primary" id="hfGo" hidden>Push</button></div>
+  </form>
+</dialog>
 <dialog id="txDlg">
   <form method="dialog">
     <div class="dlg-head"><b id="dlgTitle"></b><button type="button" id="dlgPlay" title="Play the clip">▶ Play</button></div>
@@ -575,7 +604,7 @@ function untrim() {
 }
 
 document.addEventListener("keydown", e => {
-  if (dlg.open) return;  // the transcript popup handles its own keys
+  if (dlg.open || hfDlg.open) return;  // popups handle their own keys
   if (e.target.tagName === "TEXTAREA" || (e.target.tagName === "INPUT" && e.target.type !== "checkbox")) return;
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   const k = e.key.toLowerCase();
@@ -606,7 +635,8 @@ document.getElementById("reset").onclick = () => {
     CLIPS.forEach(enforce); save(); render();
   }
 };
-document.getElementById("export").onclick = () => {
+// Everything you decided, as picks.json: ratings, trims, cuts, transcripts, labels and the length limits.
+function buildPicks() {
   const good = CLIPS.filter(c => ratings[c.file] === "good").map(c => c.file);
   const bad = CLIPS.filter(c => ratings[c.file] === "bad").map(c => c.file);
   // transcripts/labels: every good clip's final value, plus anything you edited on other clips
@@ -615,8 +645,11 @@ document.getElementById("export").onclick = () => {
     if (ratings[c.file] === "good" || c.file in texts) transcripts[c.file] = textOf(c);
     if (ratings[c.file] === "good" || c.file in labels) labelMap[c.file] = labelOf(c);
   }
-  const out = { good, bad, unrated: CLIPS.filter(c => !ratings[c.file]).map(c => c.file), trims, cuts,
-                transcripts, labels: labelMap, min_duration: MIN_DUR, max_duration: MAX_DUR };
+  return { good, bad, unrated: CLIPS.filter(c => !ratings[c.file]).map(c => c.file), trims, cuts,
+           transcripts, labels: labelMap, min_duration: MIN_DUR, max_duration: MAX_DUR };
+}
+document.getElementById("export").onclick = () => {
+  const out = buildPicks();
   const blob = new Blob([JSON.stringify(out, null, 1)], { type: "application/json" });
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "picks.json"; a.click();
 };
@@ -719,10 +752,87 @@ async function transcribe(c, force = false) {
     busy.delete(c.file); refreshRowText(c); if (dlgClip === c) renderSuggestions(c);
   }
 }
-// Served by serve.py? Then Gemini transcription is available.
+// ---- dataset download / Hugging Face push (via serve.py) ---------------------
+const datasetRequest = extra => JSON.stringify({ picks: buildPicks(), srcs: Object.fromEntries(CLIPS.map(c => [c.file, c.src])), ...extra });
+const goodCount = () => CLIPS.filter(c => ratings[c.file] === "good").length;
+const uncheckedCount = () => CLIPS.filter(c => ratings[c.file] === "good" && textSource(c) !== "yours").length;
+document.getElementById("dlData").onclick = async () => {
+  if (!goodCount()) { toast("Mark some clips good first"); return; }
+  toast(`Building the dataset from ${goodCount()} clips…`);
+  try {
+    const r = await fetch("api/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: datasetRequest() });
+    if (!r.ok) throw new Error((await r.json()).error);
+    const a = document.createElement("a"); a.href = URL.createObjectURL(await r.blob()); a.download = "dataset.zip"; a.click();
+    toast(`Downloaded dataset.zip: ${r.headers.get("X-Clips")} clips + metadata.csv`);
+  } catch (err) { toast(`Download failed: ${err.message}`); }
+};
+const hfDlg = document.getElementById("hfDlg"), $ = id => document.getElementById(id);
+const slugTitle = () => document.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "speech-prompts";
+const savedPref = k => { try { return localStorage.getItem(STORE + k) || ""; } catch (e) { return ""; } };
+let hfWho = null;  // {user, orgs} once connected (the token itself stays in serve.py)
+function showTokenStep() { $("hfTokenStep").hidden = false; $("hfRepoStep").hidden = true; $("hfGo").hidden = true; $("hfToken").focus(); }
+function showRepoStep() {
+  $("hfTokenStep").hidden = true; $("hfRepoStep").hidden = false; $("hfGo").hidden = false;
+  $("hfWho").innerHTML = `Connected as <b>${esc(hfWho.user)}</b> · <a href="#" id="hfSwitch">use a different token</a>`;
+  $("hfSwitch").onclick = ev => { ev.preventDefault(); showTokenStep(); };
+  const owners = [hfWho.user, ...hfWho.orgs], last = savedPref(":hfowner");
+  $("hfOwner").innerHTML = owners.map(o => `<option ${o === last ? "selected" : ""}>${esc(o)}</option>`).join("");
+  $("hfName").value = savedPref(":hfname") || slugTitle();
+}
+async function hfConnect(token) {
+  const res = $("hfResult"); res.textContent = "Connecting…";
+  try {
+    const r = await fetch("api/hf/connect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token }) });
+    const j = await r.json(); if (!r.ok) throw new Error(j.error);
+    $("hfToken").value = ""; res.textContent = ""; hfWho = j; showRepoStep();
+  } catch (err) { res.textContent = `Could not connect: ${err.message}`; }
+}
+$("hfConnect").onclick = () => { const tok = $("hfToken").value.trim(); if (!tok) { $("hfResult").textContent = "Paste a token first"; return; } hfConnect(tok); };
+$("hfToken").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); $("hfConnect").click(); } });
+$("pushHF").onclick = () => {
+  const n = goodCount(), un = uncheckedCount();
+  $("hfInfo").innerHTML = `${n} good clip${n === 1 ? "" : "s"} with transcripts and labels` +
+    (un ? ` · <b>${un} transcript${un === 1 ? "" : "s"} not checked yet</b>` : "");
+  $("hfMachine").innerHTML = api.hf_user ? `or <a href="#" id="hfUseMachine">use the account logged in on this computer (${esc(api.hf_user)})</a>` : "";
+  if (api.hf_user) $("hfUseMachine").onclick = ev => { ev.preventDefault(); hfConnect(""); };
+  $("hfResult").innerHTML = "";
+  hfDlg.showModal();
+  if (hfWho) showRepoStep(); else showTokenStep();
+};
+$("hfGo").onclick = async () => {
+  const name = $("hfName").value.trim(), owner = $("hfOwner").value, res = $("hfResult"), go = $("hfGo");
+  if (!/^[\w.-]+$/.test(name)) { res.textContent = "Use letters, numbers, - _ or . for the name"; return; }
+  if (!goodCount()) { res.textContent = "Mark some clips good first"; return; }
+  const repo = `${owner}/${name}`;
+  try { localStorage.setItem(STORE + ":hfowner", owner); localStorage.setItem(STORE + ":hfname", name); } catch (e) {}
+  go.disabled = true; res.textContent = `Pushing ${goodCount()} clips to ${repo}…`;
+  try {
+    const r = await fetch("api/push", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: datasetRequest({ repo_id: repo, private: $("hfPrivate").checked }) });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error);
+    res.innerHTML = `✔ Pushed ${j.clips} clips: <a href="${esc(j.url)}" target="_blank" rel="noopener">${esc(j.url)}</a>`;
+  } catch (err) { res.textContent = `Push failed: ${err.message}`; }
+  go.disabled = false;
+};
+
+// Transcribe every passed clip that has neither your transcript nor Gemini's yet (3 at a time).
+$("txAll").onclick = async () => {
+  const todo = CLIPS.filter(c => ratings[c.file] === "good" && !(c.file in texts) && !(c.file in autoTexts) && !busy.has(c.file));
+  if (!todo.length) { toast("Every passed clip already has a transcript"); return; }
+  toast(`Transcribing ${todo.length} passed clips with Gemini…`);
+  let done = 0;
+  const worker = async () => { while (todo.length) { await transcribe(todo.shift()); done++; } };
+  await Promise.all([worker(), worker(), worker()]);
+  toast(`Transcribed ${done} clips: open ✎ Transcript on each to check`);
+};
+
+// Served by serve.py? Then Gemini transcription and dataset export are available.
 if (location.protocol.startsWith("http")) {
   fetch("api/status").then(r => r.ok ? r.json() : null).then(j => {
     api = j;
+    if (api && api.export) { document.getElementById("dlData").hidden = false; document.getElementById("pushHF").hidden = false; }
+    if (api && api.transcribe) document.getElementById("txAll").hidden = false;
     if (api && api.transcribe) toast(`Gemini transcription on (${api.model}${api.language ? ", " + api.language : ""}): clips are transcribed when you pass them`);
   }).catch(() => {});
 }

@@ -4,7 +4,8 @@
     python apply_picks.py picks.json path/to/audio exported/
     python apply_picks.py picks.json path/to/audio exported/ --include-unrated
 
-Files keep their relative paths and audio format. A manifest.csv lists what was written.
+Writes audio/<name>.wav plus metadata.csv (file_name, transcription, label, duration_sec, ...), the
+Hugging Face "audiofolder" layout.
 """
 import argparse
 import csv
@@ -66,32 +67,23 @@ def splice(data, sr, segs):
     return out if out is not None else data[:0]
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("picks", help="picks.json downloaded from the review page")
-    ap.add_argument("audio_dir", help="the same audio folder you passed to build.py")
-    ap.add_argument("out_dir", help="where to write the selected (trimmed) clips")
-    ap.add_argument("--include-unrated", action="store_true", help="also export clips you did not rate")
-    ap.add_argument("--min-duration", type=float, default=None,
-                    help="skip clips shorter than this after trimming (default: the minimum saved in picks.json)")
-    ap.add_argument("--max-duration", type=float, default=None,
-                    help="skip clips longer than this after trimming (default: the maximum saved in picks.json)")
-    a = ap.parse_args()
+FIELDS = ["file_name", "transcription", "label", "duration_sec", "source_file", "start_sec", "end_sec", "cuts"]
 
-    picks = json.load(open(a.picks, encoding="utf-8"))
-    files = list(picks.get("good", [])) + (list(picks.get("unrated", [])) if a.include_unrated else [])
-    trims = picks.get("trims", {})
-    cuts = picks.get("cuts", {})
+
+def export_dataset(picks, path_of, out_dir, include_unrated=False, min_dur=None, max_dur=None):
+    """Write the chosen clips (trims and cuts applied) as audio/<name>.wav plus metadata.csv, in the
+    Hugging Face "audiofolder" layout (load_dataset("audiofolder", data_dir=out_dir) or a pushed repo).
+    path_of(file) -> path of the clip's audio. Returns (rows, too_short, too_long)."""
+    files = list(picks.get("good", [])) + (list(picks.get("unrated", [])) if include_unrated else [])
+    trims, cuts = picks.get("trims", {}), picks.get("cuts", {})
     transcripts, labels = picks.get("transcripts", {}), picks.get("labels", {})
-    min_dur = a.min_duration if a.min_duration is not None else float(picks.get("min_duration") or 0)
-    max_dur = a.max_duration if a.max_duration is not None else float(picks.get("max_duration") or 0)
-    os.makedirs(a.out_dir, exist_ok=True)
+    min_dur = float(picks.get("min_duration") or 0) if min_dur is None else min_dur
+    max_dur = float(picks.get("max_duration") or 0) if max_dur is None else max_dur
+    os.makedirs(os.path.join(out_dir, "audio"), exist_ok=True)
 
     rows, too_short, too_long = [], [], []
     for rel in files:
-        src = os.path.join(a.audio_dir, rel)
-        dst = os.path.join(a.out_dir, rel)
-        os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+        src = path_of(rel)
         info = sf.info(src)
         data, sr = sf.read(src, always_2d=True)
         start, end = trims.get(rel, [0.0, len(data) / sr])
@@ -104,21 +96,41 @@ def main():
             too_long.append(f"{rel} ({kept:.2f}s)")
             continue
         data = splice(data, sr, segs)
-        sf.write(dst, data, sr, subtype=info.subtype, format=info.format)
-        rows.append({"file": rel, "text": transcripts.get(rel, ""), "label": labels.get(rel, ""),
-                     "start_sec": round(start, 3), "end_sec": round(end, 3),
-                     "cuts": json.dumps(cuts.get(rel, [])), "duration_sec": round(len(data) / sr, 3),
-                     "trimmed": rel in trims or bool(cuts.get(rel))})
+        name = "audio/" + os.path.splitext(rel)[0].replace(os.sep, "/") + ".wav"
+        os.makedirs(os.path.dirname(os.path.join(out_dir, name)), exist_ok=True)
+        sf.write(os.path.join(out_dir, name), data, sr, format="WAV",
+                 subtype=info.subtype if info.format == "WAV" else "PCM_16")
+        rows.append({"file_name": name, "transcription": transcripts.get(rel, ""), "label": labels.get(rel, ""),
+                     "duration_sec": round(len(data) / sr, 3), "source_file": rel,
+                     "start_sec": round(start, 3), "end_sec": round(end, 3), "cuts": json.dumps(cuts.get(rel, []))})
 
-    with open(os.path.join(a.out_dir, "manifest.csv"), "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["file", "text", "label", "start_sec", "end_sec", "cuts", "duration_sec", "trimmed"])
+    with open(os.path.join(out_dir, "metadata.csv"), "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=FIELDS)
         w.writeheader()
         w.writerows(rows)
-    print(f"wrote {len(rows)} clips ({sum(r['trimmed'] for r in rows)} trimmed or cut) to {a.out_dir}")
+    return rows, too_short, too_long
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("picks", help="picks.json downloaded from the review page")
+    ap.add_argument("audio_dir", help="the folder the review page played from (<out>/clips, or your originals)")
+    ap.add_argument("out_dir", help="where to write the dataset (audio/ + metadata.csv)")
+    ap.add_argument("--include-unrated", action="store_true", help="also export clips you did not rate")
+    ap.add_argument("--min-duration", type=float, default=None,
+                    help="skip clips shorter than this after trimming (default: the minimum saved in picks.json)")
+    ap.add_argument("--max-duration", type=float, default=None,
+                    help="skip clips longer than this after trimming (default: the maximum saved in picks.json)")
+    a = ap.parse_args()
+
+    picks = json.load(open(a.picks, encoding="utf-8"))
+    rows, too_short, too_long = export_dataset(picks, lambda f: os.path.join(a.audio_dir, f), a.out_dir,
+                                               a.include_unrated, a.min_duration, a.max_duration)
+    print(f"wrote {len(rows)} clips + metadata.csv to {a.out_dir}")
     if too_short:
-        print(f"skipped {len(too_short)} clips shorter than {min_dur:g}s: " + ", ".join(too_short))
+        print(f"skipped {len(too_short)} clips under the minimum length: " + ", ".join(too_short))
     if too_long:
-        print(f"skipped {len(too_long)} clips longer than {max_dur:g}s: " + ", ".join(too_long))
+        print(f"skipped {len(too_long)} clips over the maximum length: " + ", ".join(too_long))
 
 
 if __name__ == "__main__":

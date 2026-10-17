@@ -8,11 +8,12 @@ for zero-shot TTS / voice cloning:
 2. **Review** (`build.py`): silences are removed first and clips without enough speech are dropped;
    then you listen in a single local HTML page, mark each clip **good** or **bad**, and trim or cut
    anything still wrong.
-3. **Export** (`apply_picks.py`): write out the good clips with your trims and cuts applied, plus a
-   manifest with each clip's transcript and label.
+3. **Export**: from the page, **⬇ Download dataset** (zip) or **🤗 Push to HF**, or `apply_picks.py`
+   on the command line. You get the good clips with your trims and cuts applied, plus `metadata.csv`
+   with each clip's transcript and label.
 
-Optional: `serve.py` serves the review page on localhost and **transcribes every clip you pass with
-Gemini**, so you only correct the text.
+`serve.py` serves the review page on localhost. It enables Gemini transcription of the clips you pass
+and the download and push buttons.
 
 Built for curating speech datasets (picking clean voice-cloning reference clips, spot-checking
 TTS/ASR data), but the reviewer works for any short audio.
@@ -157,16 +158,37 @@ serves the page.
 To transcribe a whole folder up front instead: `python transcribe.py path/to/clips --language Ewe`
 (writes `transcripts.csv`).
 
-## Exporting the good clips
+## Download the dataset or push it to Hugging Face
+
+With the page opened through `serve.py`:
+
+- **⬇ Download dataset**: a `dataset.zip` with `audio/*.wav` and `metadata.csv`.
+- **🤗 Push to HF**: paste a Hugging Face token with write access (or click "use the account
+  logged in on this computer"), pick your account or one of your organizations from the dropdown,
+  edit the dataset name (pre-filled from the page title), choose private or public, and push. The
+  token only goes to the local `serve.py` process, for that session; it isn't saved anywhere. The
+  repo gets a short dataset card if it doesn't have one, and pushing again replaces the clips and
+  metadata.
+- **✨ Transcribe passed clips**: sends every passed clip without a transcript yet to Gemini, e.g. ones
+  you passed before turning transcription on.
+
+Both use the Hugging Face "audiofolder" layout, so the result loads directly:
+
+```python
+from datasets import load_dataset
+ds = load_dataset("your-org/your-dataset", split="train")   # or load_dataset("audiofolder", data_dir="dataset")
+# columns: audio, transcription, label, duration_sec, source_file, start_sec, end_sec, cuts
+```
+
+## Exporting from the command line
 
 ```bash
-python apply_picks.py picks.json review/clips selected/                      # good clips, trimmed
-python apply_picks.py picks.json review/clips selected/ --include-unrated    # plus the ones you skipped
+python apply_picks.py picks.json review/clips dataset/                       # good clips -> audio/ + metadata.csv
+python apply_picks.py picks.json review/clips dataset/ --include-unrated     # plus the ones you skipped
 # (pass the folder the page played from: <out>/clips, or your original folder with --no-precut)
 ```
 
-Clips keep their relative paths and audio format; `selected/manifest.csv` records each clip's
-transcript, label, trim, cuts and final duration. Clips outside the allowed length after trimming are skipped (the limits
+It writes the same `audio/` + `metadata.csv` layout as the download button. Clips outside the allowed length after trimming are skipped (the limits
 saved in `picks.json`, or `--min-duration` / `--max-duration`).
 
 ## Metadata file
