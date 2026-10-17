@@ -10,6 +10,7 @@ import argparse
 import base64
 import csv
 import hashlib
+import http.client
 import json
 import os
 import sys
@@ -76,8 +77,8 @@ def analyze_one(path, key, model, language, voices=VOICES, emotions=EMOTIONS, re
                 time.sleep(5 * 2 ** attempt)
                 continue
             raise RuntimeError(f"HTTP {e.code}: {e.read().decode()[:200]}")
-        except (urllib.error.URLError, TimeoutError, KeyError, json.JSONDecodeError):
-            if attempt < retries - 1:
+        except (urllib.error.URLError, http.client.HTTPException, OSError, KeyError, json.JSONDecodeError):
+            if attempt < retries - 1:  # network blips and malformed replies are retried
                 time.sleep(5 * 2 ** attempt)
                 continue
             raise
@@ -114,7 +115,7 @@ def transcribe_one(path, key, model, language, retries=5):
                 time.sleep(5 * 2 ** attempt)
                 continue
             raise RuntimeError(f"HTTP {e.code}: {e.read().decode()[:200]}")
-        except (urllib.error.URLError, TimeoutError):
+        except (urllib.error.URLError, http.client.HTTPException, OSError):  # dropped/reset connections, timeouts, SSL
             if attempt < retries - 1:
                 time.sleep(5 * 2 ** attempt)
                 continue

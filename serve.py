@@ -118,7 +118,11 @@ class Handler(SimpleHTTPRequestHandler):
                         json.dump(c["cache"], f, ensure_ascii=False, indent=1)
             return self._json(200, cached)  # {text, voice, emotion, label}
         except Exception as e:
-            return self._json(500, {"error": str(e)[:300]})
+            sys.stderr.write(f"Gemini request failed: {type(e).__name__}: {str(e)[:300]}\n")
+            try:
+                return self._json(500, {"error": f"{type(e).__name__}: {str(e)[:300]}"})
+            except OSError:  # the page went away (reloaded/closed) before the answer came back
+                return None
 
     def _read(self):
         return json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")

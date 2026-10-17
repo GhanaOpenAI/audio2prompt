@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>__TITLE__</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23b5651d'/%3E%3Cpath d='M3 8h2M6 5v6M9 3v10M12 6v4' stroke='white' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>
   :root {
     --bg: #f6f5f1; --surface: #ffffff; --ink: #1d1d1b; --muted: #6b6a64; --line: #e3e1da;
@@ -809,6 +810,7 @@ dlgPad.addEventListener("click", ev => {
   if (b.dataset.act === "caps") { capsOn = !capsOn; dlgPad.innerHTML = charpadHtml(); return; }
   insertChar(dlgText, b.dataset.ch);
 });
+let aiBatch = false, lastAIError = "";
 async function transcribe(c, force = false) {
   if (!api || !api.transcribe || busy.has(c.file)) return;
   busy.add(c.file); refreshRowText(c); if (dlgClip === c) renderSuggestions(c);
@@ -820,8 +822,11 @@ async function transcribe(c, force = false) {
     autoTexts[c.file] = j.text; autoLabels[c.file] = j.label; save(); refreshLabelOptions();
     if (dlgClip === c && (force || !dlgText.value.trim() || dlgText.value === c.text)) dlgText.value = j.text;
     if (dlgClip === c && (force || !dlgLabel.value.trim() || dlgLabel.value === c.label)) dlgLabel.value = j.label;
+    return true;
   } catch (err) {
-    toast(`Gemini failed: ${err.message}`);
+    lastAIError = err.message === "Failed to fetch" ? "lost the connection to the review server" : err.message;
+    if (!aiBatch) toast(`Gemini failed: ${lastAIError}`);
+    return false;
   } finally {
     busy.delete(c.file); refreshRowText(c); if (dlgClip === c) renderSuggestions(c);
   }
@@ -909,10 +914,13 @@ $("txAll").onclick = async () => {
   const todo = CLIPS.filter(c => ratings[c.file] === "good" && needsAI(c) && !busy.has(c.file));
   if (!todo.length) { toast("Every passed clip already has a transcript and a label"); return; }
   toast(`Transcribing and labelling ${todo.length} passed clips with Gemini…`);
-  let done = 0;
-  const worker = async () => { while (todo.length) { await transcribe(todo.shift()); done++; } };
+  let done = 0, failed = 0;
+  aiBatch = true;
+  const worker = async () => { while (todo.length) { if (await transcribe(todo.shift())) done++; else failed++; } };
   await Promise.all([worker(), worker(), worker()]);
-  toast(`Done: ${done} clips filled in. Use the Unchecked filter to review them`);
+  aiBatch = false;
+  toast(failed ? `${done} clips filled in, ${failed} failed (${lastAIError}). Click AI-fill again to retry just those`
+               : `Done: ${done} clips filled in. Use the Unchecked filter to review them`);
 };
 
 // Served by serve.py? Then Gemini transcription and dataset export are available.
