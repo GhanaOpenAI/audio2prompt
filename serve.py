@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Serve a review folder on localhost, with Gemini transcription when you pass a clip.
+"""Serve a review folder on localhost: the review page only runs this way.
 
+    python serve.py review                                  # opens http://localhost:8765
     GEMINI_API_KEY=... python serve.py review --language "Asante Twi"
-    # open http://localhost:8765
 
-Opened this way (instead of double-clicking index.html), the review page:
+build.py and screen.py start this automatically when they finish. Through it, the review page:
   * transcribes every clip you mark good with Gemini (as trimmed and cut at that moment) for you to correct;
   * can download the finished dataset (audio/ + metadata.csv, zipped) or push it to a Hugging Face
     dataset repo: paste a token in the page (or use this machine's `huggingface-cli login`), pick your
@@ -234,30 +234,57 @@ def dataset_card(repo, rows, language):
     return "\n".join(lines)
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("review_dir", nargs="?", default="review", help="folder with index.html (from build.py / screen.py)")
-    ap.add_argument("--port", type=int, default=8765)
-    ap.add_argument("--host", default="127.0.0.1", help="use 0.0.0.0 to share on your network")
-    ap.add_argument("--language", default=None, help='spoken language, e.g. "Asante Twi", "Ewe" (default: auto-detect)')
-    ap.add_argument("--model", default=DEFAULT_MODEL, help=f"Gemini model (default: {DEFAULT_MODEL})")
-    ap.add_argument("--key-file", default="~/.gemini_api_key", help="file holding the key if $GEMINI_API_KEY is unset")
-    a = ap.parse_args()
-
-    root = os.path.realpath(a.review_dir)
+def run(review_dir, port=8765, host="127.0.0.1", language=None, model=DEFAULT_MODEL,
+        key_file="~/.gemini_api_key", open_browser=True):
+    """Serve review_dir until Ctrl+C. Tries the next few ports if `port` is taken."""
+    root = os.path.realpath(review_dir)
     if not os.path.isfile(os.path.join(root, "index.html")):
         sys.exit(f"No index.html in {root}; build one with build.py or screen.py first")
     cache_file = os.path.join(root, "gemini_transcripts.json")
-    key = gemini_key(a.key_file)
-    Handler.cfg = {"root": root, "key": key, "model": a.model, "language": a.language, "cache_file": cache_file,
+    key = gemini_key(key_file)
+    Handler.cfg = {"root": root, "key": key, "model": model, "language": language, "cache_file": cache_file,
                    "cache": json.load(open(cache_file, encoding="utf-8")) if os.path.exists(cache_file) else {}}
-    srv = ThreadingHTTPServer((a.host, a.port), functools.partial(Handler, directory=root))
-    print(f"Review page: http://{'localhost' if a.host in ('127.0.0.1', '0.0.0.0') else a.host}:{a.port}/")
-    print(f"Gemini transcription: {'on (' + a.model + (', ' + a.language if a.language else '') + ')' if key else 'off (no key)'}")
+    for p in range(port, port + 10):
+        try:
+            srv = ThreadingHTTPServer((host, p), functools.partial(Handler, directory=root))
+            break
+        except OSError:
+            continue
+    else:
+        sys.exit(f"Ports {port}-{port + 9} are all in use; pass --port")
+    url = f"http://{'localhost' if host in ('127.0.0.1', '0.0.0.0') else host}:{p}/"
+    print(f"\nReview page: {url}   (Ctrl+C to stop)", flush=True)
+    print(f"Gemini transcription: {'on (' + model + (', ' + language if language else '') + ')' if key else 'off (no key: set GEMINI_API_KEY or ~/.gemini_api_key)'}", flush=True)
+    print(f"Your work is saved in {os.path.join(root, 'progress.json')}", flush=True)
+    if open_browser:
+        import webbrowser
+        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
-        pass
+        print("\nstopped")
+
+
+def add_server_args(ap):
+    """Options shared by serve.py, build.py and screen.py."""
+    ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--host", default="127.0.0.1", help="use 0.0.0.0 to share on your network")
+    ap.add_argument("--language", default=None, help='spoken language for Gemini, e.g. "Asante Twi", "Ewe" (default: auto-detect)')
+    ap.add_argument("--model", default=DEFAULT_MODEL, help=f"Gemini model (default: {DEFAULT_MODEL})")
+    ap.add_argument("--key-file", default="~/.gemini_api_key", help="file holding the Gemini key if $GEMINI_API_KEY is unset")
+    ap.add_argument("--no-browser", action="store_true", help="don't open the page in a browser")
+
+
+def run_from_args(review_dir, a):
+    run(review_dir, a.port, a.host, a.language, a.model, a.key_file, not a.no_browser)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("review_dir", nargs="?", default="review", help="folder with index.html (from build.py / screen.py)")
+    add_server_args(ap)
+    a = ap.parse_args()
+    run_from_args(a.review_dir, a)
 
 
 if __name__ == "__main__":

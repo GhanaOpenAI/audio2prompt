@@ -6,8 +6,8 @@
     python build.py path/to/audio --out review --copy          # portable folder you can zip and share
     python build.py path/to/audio --min-duration 2 --max-duration 15   # allowed kept length per clip
 
-Open <out>/index.html in a browser. Ratings and trims are saved in the browser as you go;
-"Download picks" exports them as picks.json for apply_picks.py.
+When it's done it starts the review server and opens http://localhost:8765 in your browser (the page only
+runs that way). Your work is saved as you go in <out>/progress.json.
 """
 import argparse
 import csv
@@ -130,6 +130,11 @@ def main():
     ap.add_argument("--tags-col", default="tags", help="meta column with short tags (list, or ';'-separated)")
     ap.add_argument("--label-col", default="label", help="meta column pre-filling each clip's editable label")
     ap.add_argument("--notes-col", default="notes", help="meta column hidden until 'show notes' is ticked")
+    ap.add_argument("--build-only", action="store_true",
+                    help="write the review folder and exit without starting the server (open it later with serve.py)")
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from serve import add_server_args, run_from_args
+    add_server_args(ap)
     a = ap.parse_args()
 
     audio_dir = os.path.abspath(a.audio_dir)
@@ -244,6 +249,8 @@ def main():
         print(f"metadata matched for {sum(1 for c in clips if c['text'] or c['subtitle'] or c['notes'] or c['tags'])} clips")
     for s in skipped:
         print("skipped", s, file=sys.stderr)
+    if not a.build_only:
+        run_from_args(out, a)
 
 
 if __name__ == "__main__":

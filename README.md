@@ -1,24 +1,43 @@
 # audio2prompt
 
 Turn a large pool of speech (a folder or a Hugging Face dataset) into clean, ear-checked prompt clips
-for zero-shot TTS / voice cloning:
+for zero-shot TTS / voice cloning, all on a CPU and in your browser:
 
-1. **Screen** (`screen.py`): score every clip from a folder or a Hugging Face dataset with two tiny
-   CPU models and shortlist the top N (default 200).
-2. **Review** (`build.py`): silences are removed first and clips without enough speech are dropped;
-   then you listen in a single local HTML page, mark each clip **good** or **bad**, and trim or cut
-   anything still wrong.
-3. **Export**: from the page, **⬇ Download dataset** (zip) or **🤗 Push to HF**, or `apply_picks.py`
-   on the command line. You get the good clips with your trims and cuts applied, plus `metadata.csv`
-   with each clip's transcript and label.
-
-`serve.py` serves the review page on localhost. It enables Gemini transcription of the clips you pass
-and the download and push buttons.
-
-Built for curating speech datasets (picking clean voice-cloning reference clips, spot-checking
-TTS/ASR data), but the reviewer works for any short audio.
+1. **Screen**: score every clip with two tiny CPU models and shortlist the best N (default 200).
+2. **Clean**: remove silences, and drop clips without enough speech left.
+3. **Review**: listen in a local review app; mark each clip good or bad, trim or cut what's wrong,
+   check its transcript (Gemini fills it in) and give it a label.
+4. **Publish**: download the dataset (audio + `metadata.csv`) or push it straight to Hugging Face.
 
 ![Reviewer screenshot](docs/screenshot.png)
+
+## Quick start
+
+```bash
+git clone https://github.com/GhanaOpenAI/audio2prompt.git
+cd audio2prompt
+pip install -r requirements.txt            # + `pip install datasets` for Hugging Face input
+
+# a folder of clips, or a Hugging Face dataset:
+python screen.py --folder path/to/clips --top 200 --language "Asante Twi"
+python screen.py --hf user/dataset --split train --text-column text --top 200 --language Ewe
+```
+
+When it's done, the review app opens in your browser at **http://localhost:8765**. It runs on your
+machine through a small local server (`serve.py`, Python standard library), which saves your work to
+`shortlist/progress.json` as you go, transcribes clips with Gemini and publishes the dataset. The page
+only works this way; opened as a plain file it just tells you how to start the server.
+
+- Already have a set of clips and don't need screening? `python build.py path/to/clips` cleans them and
+  opens the review app the same way.
+- Come back to a review later: `python serve.py shortlist` (or the folder you used).
+- Gemini transcription needs a key in `$GEMINI_API_KEY` or `~/.gemini_api_key`; without one,
+  everything else works.
+- Try it on synthetic demo clips: `python example/make_demo.py && python build.py example/audio --meta example/clips.csv --out example/review`.
+
+Options shared by `screen.py`, `build.py` and `serve.py`: `--port` (8765), `--language` (spoken
+language for Gemini), `--model` (Gemini model), `--no-browser`, `--host 0.0.0.0` to share on your
+network. `--build-only` (build/screen) writes the folder without starting the server.
 
 ## Screening a big pool (CPU only)
 
@@ -27,7 +46,7 @@ pip install -r requirements.txt            # + `pip install datasets` for Huggin
 
 python screen.py --folder path/to/clips --top 200
 python screen.py --hf user/dataset --split train --audio-column audio --text-column text --top 200
-# -> shortlist/index.html (review page), shortlist/audio/, shortlist/screening.csv
+# -> opens the review app; files in shortlist/ (clips/, index.html, screening.csv, progress.json)
 ```
 
 Each clip goes through two small ONNX models, with no PyTorch and no GPU. They're downloaded once to
@@ -43,7 +62,7 @@ trimmed and every pause of `--min-gap` 0.3 s or more shortened to `--keep-gap` 0
 **rejected** if that cleaned length is under `--min-duration` (3 s), if less than `--min-speech-ratio`
 (75 %) of it is speech, or if they clip. DNSMOS only runs on clips that survive the VAD checks, which is what keeps it fast.
 The rest are **ranked** by `--rank-by` (default `bak+ovrl`, favouring clean backgrounds) and the top
-`--top` are written edge-trimmed to `shortlist/audio/` with a ready-to-use review page.
+`--top` are written edge-trimmed to `shortlist/audio/`, cleaned into `shortlist/clips/`, and opened for review.
 `screening.csv` lists every clip scanned with its scores and the reason for any rejection.
 
 Speed: about **24 clips/s on a 6-core laptop CPU** for typical 2–8 s clips (folder input), roughly
@@ -71,6 +90,14 @@ On your own data:
 python build.py path/to/clips                       # -> review/index.html
 python build.py path/to/clips --meta clips.csv      # show transcripts / notes next to each clip
 python build.py path/to/clips --copy --out review   # copies audio in, so you can zip and share the folder
+python build.py path/to/clips --min-duration 2 --max-duration 15   # allowed kept length (defaults 3 and 10 s, 0 = off)
+```
+
+## Building a review from your own clips
+
+```bash
+python build.py path/to/clips                       # -> review/ and opens the review app
+python build.py path/to/clips --meta clips.csv      # show transcripts / labels / notes from a metadata file
 python build.py path/to/clips --min-duration 2 --max-duration 15   # allowed kept length (defaults 3 and 10 s, 0 = off)
 ```
 
@@ -129,11 +156,9 @@ python build.py path/to/clips --min-duration 2 --max-duration 15   # allowed kep
 - **Click the waveform** to play from that point.
 - **Filters:** All / Unrated / Good / Bad. Use *Unrated* to work through what's left.
 - **Notes are hidden by default** so automatic checks don't bias your ears; tick *show notes* to see them.
-- **Progress is saved as you go**: in the browser, and, when the page is opened through `serve.py`, also
-  in `<review>/progress.json`, so it survives other browsers, cleared browser data and restarts.
-  Rebuilding with the same title and files keeps your progress. Browsers keep the file-opened page
-  (`file://…/index.html`) and the served one (`http://localhost:8765`) separate: to move work from one
-  to the other, use **Download picks** there and **Load picks** here.
+- **Progress is saved as you go** to `<review>/progress.json` (and in the browser), so it survives other
+  browsers, cleared browser data and restarts. Rebuilding with the same title and files keeps it.
+  **Download picks** / **Load picks** move a review between machines or merge a colleague's.
 - **Download picks** saves `picks.json`; **Load picks** reads one back in (to resume on another machine,
   merge a colleague's review, or carry progress over to a rebuilt page). Keys can be file paths or clip numbers.
 
@@ -148,12 +173,11 @@ python build.py path/to/clips --min-duration 2 --max-duration 15   # allowed kep
 
 ```bash
 export GEMINI_API_KEY=...                         # or put it in ~/.gemini_api_key
-python serve.py review --language "Asante Twi"    # then open http://localhost:8765
+python serve.py review --language "Asante Twi"    # (screen.py / build.py take --language too)
 ```
 
-Opened through `serve.py` (rather than as a file), the review page sends every clip you mark ✓ good to
-Gemini, **as trimmed and cut at that moment**, and fills in its transcript; you open ✎ Transcript to
-correct it. "↻ Transcribe again" in the popup re-runs it after you change the cuts. The key stays in
+With a key, the review app sends every clip you mark ✓ good to Gemini, **as trimmed and cut at that
+moment**, and fills in its transcript; you open ✎ Transcript to correct it. "↻ Transcribe again" in the popup re-runs it after you change the cuts. The key stays in
 the `serve.py` process (the page never sees it), results are cached in `review/gemini_transcripts.json`,
 and `--model` picks the Gemini model (default `gemini-flash-latest`). Without a key, `serve.py` just
 serves the page.
@@ -162,8 +186,6 @@ To transcribe a whole folder up front instead: `python transcribe.py path/to/cli
 (writes `transcripts.csv`).
 
 ## Download the dataset or push it to Hugging Face
-
-With the page opened through `serve.py`:
 
 - **⬇ Download dataset**: a `dataset.zip` with `audio/*.wav` and `metadata.csv`.
 - **🤗 Push to HF**: paste a Hugging Face token with write access (or click "use the account
@@ -214,9 +236,11 @@ Different column names? Map them: `--text-col transcript --subtitle-col english 
 
 - Supported formats: anything [soundfile](https://python-soundfile.readthedocs.io) can read:
   WAV, FLAC, OGG/Opus, MP3, AIFF.
-- The page loads audio by relative path. Without `--copy`, keep the audio where it was when you
-  built the page. With `--copy`, the output folder is self-contained.
-- No server, no uploads: everything stays on your machine.
+- The review folder is self-contained once silences are pre-cut (the default): `clips/`, `index.html`,
+  `progress.json`. With `--no-precut`, the page plays your original files; keep them where they were
+  (or use `--copy`).
+- The server listens on 127.0.0.1 only unless you pass `--host`. Audio and keys stay on your machine;
+  Gemini (when you use it) and Hugging Face (when you push) are the only outside services.
 
 ## License
 

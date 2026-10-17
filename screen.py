@@ -249,6 +249,9 @@ def main():
     ap.add_argument("--rank-by", choices=["ovrl", "bak", "sig", "bak+ovrl"], default="bak+ovrl",
                     help="ranking score among clips that pass (default: bak+ovrl, favours clean backgrounds)")
     ap.add_argument("--pad", type=float, default=0.1, help="silence kept before the first / after the last word (s)")
+    ap.add_argument("--build-only", action="store_true", help="write the shortlist and page, don't start the server")
+    from serve import add_server_args
+    add_server_args(ap)
     ap.add_argument("--workers", type=int, default=os.cpu_count() or 1,
                     help="parallel CPU worker processes (default: all cores)")
     a = ap.parse_args()
@@ -375,7 +378,11 @@ def main():
         subprocess.run([sys.executable, os.path.join(HERE, "build.py"), os.path.join(a.out, "audio"),
                         "--meta", os.path.join(a.out, "shortlist.json"), "--out", a.out, "--title", title,
                         "--min-duration", str(a.min_duration), "--max-duration", str(a.max_duration),
-                        "--min-gap", str(a.min_gap), "--keep-gap", str(a.keep_gap), "--edge-pad", str(a.pad)], check=True)
+                        "--min-gap", str(a.min_gap), "--keep-gap", str(a.keep_gap), "--edge-pad", str(a.pad),
+                        "--port", str(a.port), "--host", a.host, "--model", a.model, "--key-file", a.key_file]
+                       + (["--language", a.language] if a.language else [])
+                       + (["--no-browser"] if a.no_browser else []) + (["--build-only"] if a.build_only else []),
+                       check=True)
 
 
 if __name__ == "__main__":
