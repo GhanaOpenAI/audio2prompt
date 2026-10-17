@@ -189,8 +189,8 @@ To transcribe a whole folder up front instead: `python transcribe.py path/to/cli
   token only goes to the local `serve.py` process, for that session; it isn't saved anywhere. The
   repo gets a short dataset card if it doesn't have one, and pushing again replaces the clips and
   metadata.
-- **✨ Transcribe passed clips**: sends every passed clip without a transcript yet to Gemini, e.g. ones
-  you passed before turning transcription on.
+- **✨ AI-fill passed clips**: has Gemini transcribe and label every passed clip that doesn't have both
+  yet, e.g. ones you passed before adding a Gemini key.
 
 Both use the Hugging Face "audiofolder" layout, so the result loads directly:
 
