@@ -57,6 +57,11 @@
   .meta .trimmed { color: var(--accent); font-weight: 600; }
   .meta button { border: none; background: none; color: var(--muted); font: inherit; text-decoration: underline; cursor: pointer; padding: 0; }
   .wave { display: block; width: 100%; height: 48px; margin-top: 6px; cursor: pointer; touch-action: none; border-radius: 4px; }
+  .selbar { display: none; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 4px; min-height: 26px; }
+  .row.active .selbar { display: flex; }
+  .selbar button { border: 1px solid var(--sel-edge); background: var(--surface); color: var(--sel-edge); border-radius: 6px;
+                   padding: 2px 9px; font: inherit; font-size: 12px; cursor: pointer; }
+  .selbar button.cut { background: var(--sel-edge); color: #fff; }
   .notes { font-size: 12px; margin-top: 4px; color: var(--muted); }
   body.blind .notes { display: none; }
   .rate { display: flex; gap: 6px; }
@@ -253,11 +258,26 @@ function drawWave(i) {
   }
   ctx.fillStyle = css("--accent");
   for (const x of [xs, xe]) { ctx.fillRect(Math.round(x) - 1, 0, 2, h); ctx.fillRect(Math.round(x) - 5, 0, 10, 6); ctx.fillRect(Math.round(x) - 5, h - 6, 10, 6); }
+  updateSelbar(i, row);
   if (i === current && player.src.endsWith(c.src) && player.currentTime > 0) {
     const xp = player.currentTime / c.dur * w; ctx.fillStyle = css("--ink"); ctx.fillRect(xp, 0, 1.5, h);
   }
 }
 function drawAll() { view.forEach((_, i) => drawWave(i)); }
+
+// The line under the active clip's waveform: a hint, or buttons for the current selection.
+function updateSelbar(i, row) {
+  const bar = row.querySelector(".selbar"), c = view[i];
+  const has = sel && sel.file === c.file && i === current;
+  const state = has ? `sel:${sel.a.toFixed(3)}-${sel.b.toFixed(3)}` : "hint";
+  if (bar.dataset.state === state) return;
+  bar.dataset.state = state;
+  bar.innerHTML = has
+    ? `<span>Selected ${fmt(sel.b - sel.a)} (${fmt(sel.a)} → ${fmt(sel.b)})</span>
+       <button class="cut" data-act="cut">✂ Cut selection</button><button data-act="playsel">▶ Play selection</button>
+       <button data-act="dropsel">Cancel</button>`
+    : `<span>Drag across the waveform to select a part to cut out, e.g. a cough or a stray word in the middle.</span>`;
+}
 
 function setTrim(c, s, e) {
   s = Math.max(0, Math.min(s, c.dur)); e = Math.max(0, Math.min(e, c.dur));
@@ -358,6 +378,7 @@ function render() {
         ${c.text ? `<div class="text">${esc(c.text)}</div>` : ""}
         ${c.subtitle ? `<div class="subtitle">${esc(c.subtitle)}</div>` : ""}
         <canvas class="wave"></canvas>
+        <div class="selbar"></div>
         <div class="meta">${metaHtml(c)}</div>
         ${c.notes ? `<div class="notes">${esc(c.notes)}</div>` : ""}
       </div>
@@ -371,6 +392,12 @@ function render() {
     row.querySelector(".meta").addEventListener("click", ev => {
       if (ev.target.dataset.act === "untrim") { select(i); untrim(); }
       if (ev.target.dataset.act === "silence") { select(i); silenceCurrent(); }
+    });
+    row.querySelector(".selbar").addEventListener("click", ev => {
+      const act = ev.target.dataset.act; if (!act) return;
+      if (act === "cut") cutSelection();
+      else if (act === "playsel") playSelection();
+      else if (act === "dropsel") { sel = null; drawWave(i); }
     });
     attachWave(row, i);
     list.appendChild(row);
