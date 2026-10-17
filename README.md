@@ -6,7 +6,8 @@ for zero-shot TTS / voice cloning, all on a CPU and in your browser:
 1. **Screen**: score every clip with two tiny CPU models and shortlist the best N (default 200).
 2. **Clean**: remove silences, and drop clips without enough speech left.
 3. **Review**: listen in a local review app; mark each clip good or bad, trim or cut what's wrong,
-   and check its transcript and label (Gemini fills both in when you pass a clip).
+   and check its transcript and label (filled in automatically when you pass a clip: transcripts by
+   Google's free speech recognition, labels by Gemini).
 4. **Publish**: download the dataset (audio + `metadata.csv`) or push it straight to Hugging Face.
 
 ![Reviewer screenshot](docs/screenshot.png)
@@ -150,15 +151,24 @@ python build.py path/to/clips --min-duration 2 --max-duration 15   # allowed kep
   "min_duration": 3.0, "max_duration": 10.0 }
 ```
 
-## Automatic transcription with Gemini
+## Automatic transcripts and labels
 
 ```bash
-export GEMINI_API_KEY=...                         # or put it in ~/.gemini_api_key
-python serve.py review --language "Asante Twi"    # (screen.py / build.py take --language too)
+export GEMINI_API_KEY=...                         # for labels; or put it in ~/.gemini_api_key
+python serve.py review --language "Asante Twi"    # (screen.py / build.py take the same options)
 ```
 
-With a key, the review app sends every clip you mark ✓ good to Gemini, **as trimmed and cut at that
-moment**, and fills in its **transcript and label** in one call; you open ✎ Review to correct them.
+Every clip you mark ✓ good is sent off, **as trimmed and cut at that moment**, for:
+
+- a **transcript**: by default from Google's free speech-recognition endpoint (no key needed;
+  best effort and rate-limited). Pick its language with `--asr-lang` (e.g. `ak-GH` for Twi/Akan),
+  guessed from `--language` for common Ghanaian languages. Google supports a limited set of languages
+  (Akan works well; check yours). Use `--asr gemini` to transcribe with Gemini instead.
+- a **label**, from Gemini (needs a key).
+
+Both run separately: **✨ Transcribe passed clips** and **✨ Label passed clips** fill in whatever is
+still missing, and the ✎ Review popup has **↻ Transcribe again** / **↻ Label again**. You open
+✎ Review to correct them.
 
 The label is the speaker's **voice characteristic** plus the **emotion** they convey, e.g.
 `adult female - tender`. Gemini must pick each from a list, so labels stay consistent:
@@ -169,7 +179,6 @@ The label is the speaker's **voice characteristic** plus the **emotion** they co
 | emotion | neutral, happy, sad, angry, fearful, surprised, disgusted, calm, excited, tender, stern, pleading, sarcastic, curious | `--emotions "a,b,c"` |
 
 Every combination is offered in the label dropdown, alongside labels you type yourself.
-**✨ AI-fill passed clips** does the same for every passed clip that doesn't have both yet.
 
 **Before you download or push**, if any passed clip still has an AI-generated (or unchecked)
 transcript or label, you're asked to **Review them** (opens the Unchecked filter) or **Continue with
@@ -191,8 +200,8 @@ To transcribe a whole folder up front instead: `python transcribe.py path/to/cli
   token only goes to the local `serve.py` process, for that session; it isn't saved anywhere. The
   repo gets a short dataset card if it doesn't have one, and pushing again replaces the clips and
   metadata.
-- **✨ AI-fill passed clips**: has Gemini transcribe and label every passed clip that doesn't have both
-  yet, e.g. ones you passed before adding a Gemini key.
+- **✨ Transcribe passed clips** / **✨ Label passed clips**: fill in whatever is still missing, e.g.
+  for clips you passed before transcription or labels were on.
 
 Both use the Hugging Face "audiofolder" layout, so the result loads directly:
 

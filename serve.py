@@ -5,8 +5,9 @@
     GEMINI_API_KEY=... python serve.py review --language "Asante Twi"
 
 build.py and screen.py start this automatically when they finish. Through it, the review page:
-  * has Gemini transcribe and label every clip you mark good (as trimmed and cut at that moment): the label
-    is a voice characteristic + a perceived emotion, each picked from a list (--voices / --emotions);
+  * transcribes every clip you mark good (Google's free speech endpoint by default, or Gemini with
+    --asr gemini) and has Gemini label it: a voice characteristic + a perceived emotion, each picked from
+    a list (--voices / --emotions). Both run on the clip as trimmed and cut at that moment;
   * can download the finished dataset (audio/ + metadata.csv, zipped) or push it to a Hugging Face
     dataset repo: paste a token in the page (or use this machine's `huggingface-cli login`), pick your
     account or one of your organizations, and name the dataset.
@@ -31,7 +32,12 @@ import soundfile as sf
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from apply_picks import export_dataset, keep_segments, splice  # noqa: E402
-from transcribe import DEFAULT_MODEL, EMOTIONS, VOICES, analyze_one, gemini_key  # noqa: E402
+from transcribe import (DEFAULT_MODEL, EMOTIONS, VOICES, gemini_key, google_asr, google_lang,  # noqa: E402
+                        label_one, transcribe_one)
+
+
+def transcribe_available(c):
+    return (c["asr"] == "google" and bool(c["asr_lang"])) or (c["asr"] == "gemini" and bool(c["key"]))
 
 
 PROGRESS_VERSION = 2  # bump when the saved state changes shape; older open pages must reload
@@ -59,7 +65,9 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(200, json.load(open(f, encoding="utf-8")) if os.path.exists(f) else {})
         if self.path.split("?")[0].endswith("/api/status"):
             c = self.cfg
-            return self._json(200, {"transcribe": bool(c["key"]), "model": c["model"], "language": c["language"],
+            return self._json(200, {"transcribe": transcribe_available(c), "labels": bool(c["key"]),
+                                    "asr": c["asr"] if c["asr"] != "google" else f"Google ({c['asr_lang']})",
+                                    "model": c["model"], "language": c["language"],
                                     "voices": c["voices"], "emotions": c["emotions"],
                                     "export": True, "hf_user": hf_user()})
         return super().do_GET()
@@ -85,13 +93,21 @@ class Handler(SimpleHTTPRequestHandler):
             return self._hf_connect()
         if route.endswith("/api/progress"):
             return self._save_progress()
-        if not route.endswith("/api/transcribe"):
-            return self._json(404, {"error": "not found"})
+        if route.endswith("/api/transcribe"):
+            return self._ai("transcribe")
+        if route.endswith("/api/label"):
+            return self._ai("label")
+        return self._json(404, {"error": "not found"})
+
+    def _ai(self, job):
+        """Transcribe (--asr: Google's free endpoint or Gemini) or label (Gemini) one clip, as trimmed and cut."""
         c = self.cfg
-        if not c["key"]:
-            return self._json(400, {"error": "no Gemini key: set GEMINI_API_KEY or --key-file"})
+        if job == "label" and not c["key"]:
+            return self._json(400, {"error": "labels need a Gemini key: set GEMINI_API_KEY or --key-file"})
+        if job == "transcribe" and not transcribe_available(c):
+            return self._json(400, {"error": "no transcription engine: see --asr / --asr-lang"})
         try:
-            req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+            req = self._read()
             path = os.path.realpath(os.path.join(c["root"], req["src"]))
             if not path.startswith(c["root"] + os.sep) or not os.path.isfile(path):
                 return self._json(400, {"error": "unknown clip"})
@@ -101,24 +117,32 @@ class Handler(SimpleHTTPRequestHandler):
             buf = io.BytesIO()
             sf.write(buf, audio, sr, format="WAV", subtype="PCM_16")
             wav = buf.getvalue()
-            key = (hashlib.sha1(wav).hexdigest() + f"|{c['model']}|{c['language'] or ''}|"
-                   + hashlib.sha1(json.dumps([c["voices"], c["emotions"]]).encode()).hexdigest()[:8])
+            if job == "transcribe":
+                engine = f"google:{c['asr_lang']}" if c["asr"] == "google" else f"gemini:{c['model']}:{c['language'] or ''}"
+            else:
+                engine = f"label:{c['model']}:" + hashlib.sha1(json.dumps([c["voices"], c["emotions"]]).encode()).hexdigest()[:8]
+            key = hashlib.sha1(wav).hexdigest() + "|" + engine
             with self.lock:
                 cached = c["cache"].get(key)
             if cached is None:
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                     tmp.write(wav)
                 try:
-                    cached = analyze_one(tmp.name, c["key"], c["model"], c["language"], c["voices"], c["emotions"])
+                    if job == "label":
+                        cached = label_one(tmp.name, c["key"], c["model"], c["voices"], c["emotions"])
+                    elif c["asr"] == "google":
+                        cached = {"text": google_asr(tmp.name, c["asr_lang"])}
+                    else:
+                        cached = {"text": transcribe_one(tmp.name, c["key"], c["model"], c["language"])}
                 finally:
                     os.unlink(tmp.name)
                 with self.lock:
                     c["cache"][key] = cached
                     with open(c["cache_file"], "w", encoding="utf-8") as f:
                         json.dump(c["cache"], f, ensure_ascii=False, indent=1)
-            return self._json(200, cached)  # {text, voice, emotion, label}
+            return self._json(200, cached)  # transcribe: {text}; label: {voice, emotion, label}
         except Exception as e:
-            sys.stderr.write(f"Gemini request failed: {type(e).__name__}: {str(e)[:300]}\n")
+            sys.stderr.write(f"{job} failed: {type(e).__name__}: {str(e)[:300]}\n")
             try:
                 return self._json(500, {"error": f"{type(e).__name__}: {str(e)[:300]}"})
             except OSError:  # the page went away (reloaded/closed) before the answer came back
@@ -247,7 +271,8 @@ def dataset_card(repo, rows, language):
 
 
 def run(review_dir, port=8765, host="127.0.0.1", language=None, model=DEFAULT_MODEL,
-        key_file="~/.gemini_api_key", open_browser=True, voices=VOICES, emotions=EMOTIONS):
+        key_file="~/.gemini_api_key", open_browser=True, voices=VOICES, emotions=EMOTIONS,
+        asr="google", asr_lang=None):
     """Serve review_dir until Ctrl+C. Tries the next few ports if `port` is taken."""
     root = os.path.realpath(review_dir)
     if not os.path.isfile(os.path.join(root, "index.html")):
@@ -256,6 +281,7 @@ def run(review_dir, port=8765, host="127.0.0.1", language=None, model=DEFAULT_MO
     key = gemini_key(key_file)
     Handler.cfg = {"root": root, "key": key, "model": model, "language": language, "cache_file": cache_file,
                    "voices": list(voices), "emotions": list(emotions),
+                   "asr": asr, "asr_lang": google_lang(language, asr_lang),
                    "cache": json.load(open(cache_file, encoding="utf-8")) if os.path.exists(cache_file) else {}}
     for p in range(port, port + 10):
         try:
@@ -267,7 +293,13 @@ def run(review_dir, port=8765, host="127.0.0.1", language=None, model=DEFAULT_MO
         sys.exit(f"Ports {port}-{port + 9} are all in use; pass --port")
     url = f"http://{'localhost' if host in ('127.0.0.1', '0.0.0.0') else host}:{p}/"
     print(f"\nReview page: {url}   (Ctrl+C to stop)", flush=True)
-    print(f"Gemini transcription: {'on (' + model + (', ' + language if language else '') + ')' if key else 'off (no key: set GEMINI_API_KEY or ~/.gemini_api_key)'}", flush=True)
+    cfg = Handler.cfg
+    if asr == "google":
+        print(f"Transcription: Google free speech endpoint ({cfg['asr_lang']})" if cfg["asr_lang"] else
+              "Transcription: off (Google needs a language: --asr-lang, e.g. ak-GH for Twi)", flush=True)
+    else:
+        print(f"Transcription: Gemini ({model})" if key else "Transcription: off (no Gemini key)", flush=True)
+    print(f"Labels: Gemini ({model})" if key else "Labels: off (no Gemini key: set GEMINI_API_KEY or ~/.gemini_api_key)", flush=True)
     print(f"Your work is saved in {os.path.join(root, 'progress.json')}", flush=True)
     if open_browser:
         import webbrowser
@@ -286,6 +318,10 @@ def add_server_args(ap):
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"Gemini model (default: {DEFAULT_MODEL})")
     ap.add_argument("--key-file", default="~/.gemini_api_key", help="file holding the Gemini key if $GEMINI_API_KEY is unset")
     ap.add_argument("--no-browser", action="store_true", help="don't open the page in a browser")
+    ap.add_argument("--asr", choices=["google", "gemini"], default="google",
+                    help="transcription engine: Google's free speech endpoint (default) or Gemini")
+    ap.add_argument("--asr-lang", default=None,
+                    help="Google speech language code, e.g. ak-GH for Twi/Akan (default: guessed from --language)")
     ap.add_argument("--voices", default=",".join(VOICES),
                     help="comma-separated voice characteristics Gemini picks from for labels (default: %(default)s)")
     ap.add_argument("--emotions", default=",".join(EMOTIONS),
@@ -295,7 +331,8 @@ def add_server_args(ap):
 def run_from_args(review_dir, a):
     def split(s):
         return [x.strip() for x in s.split(",") if x.strip()]
-    run(review_dir, a.port, a.host, a.language, a.model, a.key_file, not a.no_browser, split(a.voices), split(a.emotions))
+    run(review_dir, a.port, a.host, a.language, a.model, a.key_file, not a.no_browser, split(a.voices), split(a.emotions),
+        a.asr, a.asr_lang)
 
 
 def main():

@@ -42,6 +42,94 @@ def make_label(voice, emotion):
     return f"{voice} - {emotion}"
 
 
+# Google's free speech endpoint (the one Chrome and the SpeechRecognition library use). Akan/Twi works
+# well with "ak-GH"; many other languages are not supported. No key setup needed; rate-limited, best effort.
+GOOGLE_ASR_URL = "https://www.google.com/speech-api/v2/recognize?client=chromium&output=json&lang={lang}&key={key}"
+GOOGLE_PUBLIC_KEY = "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw"  # Chromium's public speech key (SpeechRecognition default)
+ASR_LANGS = {"twi": "ak-GH", "asante twi": "ak-GH", "akuapem twi": "ak-GH", "akan": "ak-GH", "fante": "ak-GH",
+             "english": "en-GH", "ewe": "ee-GH", "ga": "gaa-GH", "hausa": "ha-NG"}
+
+
+def google_lang(language, explicit=None):
+    """Google speech language code: --asr-lang if given, else guessed from --language."""
+    return explicit or ASR_LANGS.get((language or "").strip().lower())
+
+
+def google_asr(path, lang, retries=4):
+    """Transcribe with Google's free speech endpoint. Returns "" when Google hears nothing it can transcribe."""
+    import io
+    import numpy as np
+    import soundfile as sf
+    from scipy.signal import resample_poly
+    x, sr = sf.read(path, dtype="float32", always_2d=True)
+    x = x.mean(axis=1)
+    if sr != 16000:
+        import math
+        g = math.gcd(int(sr), 16000)
+        x = resample_poly(x, 16000 // g, int(sr) // g).astype(np.float32)
+    buf = io.BytesIO()
+    sf.write(buf, x, 16000, format="FLAC")
+    req = urllib.request.Request(GOOGLE_ASR_URL.format(lang=lang, key=GOOGLE_PUBLIC_KEY), buf.getvalue(),
+                                 {"Content-Type": "audio/x-flac; rate=16000", "User-Agent": "Mozilla/5.0"})
+    for attempt in range(retries):
+        try:
+            raw = urllib.request.urlopen(req, timeout=60).read().decode("utf-8")
+            for line in raw.splitlines():
+                if line.strip():
+                    d = json.loads(line)
+                    if d.get("result"):
+                        return d["result"][0]["alternative"][0].get("transcript", "").strip()
+            return ""
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 500, 503) and attempt < retries - 1:
+                time.sleep(5 * 2 ** attempt)
+                continue
+            raise RuntimeError(f"Google speech HTTP {e.code}")
+        except (urllib.error.URLError, http.client.HTTPException, OSError):
+            if attempt < retries - 1:
+                time.sleep(5 * 2 ** attempt)
+                continue
+            raise
+
+
+def label_one(path, key, model, voices=VOICES, emotions=EMOTIONS, retries=5):
+    """Gemini picks the speaker's voice characteristic and perceived emotion from the given lists.
+    -> {"voice", "emotion", "label"}"""
+    data = open(path, "rb").read()
+    prompt = ("Listen to this speech clip.\n1. voice: the speaker's voice characteristic, chosen from the allowed values.\n"
+              "2. emotion: the emotion the speaker conveys (tone of voice, not just the words), chosen from the "
+              "allowed values.")
+    schema = {"type": "OBJECT", "properties": {
+        "voice": {"type": "STRING", "enum": list(voices)},
+        "emotion": {"type": "STRING", "enum": list(emotions)}},
+        "required": ["voice", "emotion"]}
+    body = {
+        "contents": [{"parts": [
+            {"inline_data": {"mime_type": MIME.get(os.path.splitext(path)[1].lower(), "audio/wav"),
+                             "data": base64.b64encode(data).decode()}},
+            {"text": prompt}]}],
+        "generationConfig": {"temperature": 0, "responseMimeType": "application/json", "responseSchema": schema},
+    }
+    req = urllib.request.Request(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        json.dumps(body).encode(), {"Content-Type": "application/json", "x-goog-api-key": key})
+    for attempt in range(retries):
+        try:
+            resp = json.loads(urllib.request.urlopen(req, timeout=120).read())
+            out = json.loads(resp["candidates"][0]["content"]["parts"][0]["text"])
+            return {"voice": out["voice"], "emotion": out["emotion"], "label": make_label(out["voice"], out["emotion"])}
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 500, 503) and attempt < retries - 1:
+                time.sleep(5 * 2 ** attempt)
+                continue
+            raise RuntimeError(f"HTTP {e.code}: {e.read().decode()[:200]}")
+        except (urllib.error.URLError, http.client.HTTPException, OSError, KeyError, json.JSONDecodeError):
+            if attempt < retries - 1:
+                time.sleep(5 * 2 ** attempt)
+                continue
+            raise
+
+
 def analyze_one(path, key, model, language, voices=VOICES, emotions=EMOTIONS, retries=5):
     """One Gemini call -> {"text", "voice", "emotion", "label"}: the transcription plus the speaker's voice
     characteristic and perceived emotion, each chosen from the given lists."""

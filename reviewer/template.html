@@ -144,7 +144,8 @@
     <input type="file" id="importFile" accept=".json,application/json" hidden>
     <button class="btn" id="reset">Reset</button>
     <button class="btn" id="export">Download picks</button>
-    <button class="btn" id="txAll" hidden title="Have Gemini transcribe and label every passed clip that doesn't have both yet">✨ AI-fill passed clips</button>
+    <button class="btn" id="txAll" hidden title="Transcribe every passed clip that has no transcript yet">✨ Transcribe passed clips</button>
+    <button class="btn" id="lbAll" hidden title="Have Gemini label every passed clip that has no label yet">✨ Label passed clips</button>
     <button class="btn" id="dlData" hidden title="Good clips (trims and cuts applied) + metadata.csv, as a zip">⬇ Download dataset</button>
     <button class="btn primary" id="pushHF" hidden title="Push the good clips with their transcripts and labels to a Hugging Face dataset">🤗 Push to HF</button>
   </div>
@@ -222,7 +223,7 @@ let silDone = load(":silence");  // clips whose silences were already handled au
 let texts = load(":texts"), labels = load(":labels");  // your transcripts and labels (override what was loaded)
 let autoTexts = load(":autotexts"), autoLabels = load(":autolabels");  // Gemini's transcripts and labels
 let api = null;  // {transcribe, model, language} when the page is served by serve.py
-const busy = new Set();  // clips being transcribed right now
+const busy = { transcribe: new Set(), label: new Set() };  // clips being transcribed / labelled right now
 const save = () => {
   try {
     localStorage.setItem(STORE + ":ratings", JSON.stringify(ratings)); localStorage.setItem(STORE + ":trims", JSON.stringify(trims));
@@ -343,7 +344,8 @@ const labelOf = c => c.file in labels ? labels[c.file] : c.file in autoLabels ? 
 const labelSource = c => c.file in labels ? "yours" : c.file in autoLabels ? "gemini" : c.label ? "loaded" : "none";
 // "Checked" = you saved the transcript and label yourself (popup Save, or editing them).
 const isChecked = c => textSource(c) === "yours" && labelSource(c) === "yours";
-const needsAI = c => !(c.file in texts || c.file in autoTexts) || !(c.file in labels || c.file in autoLabels);
+const needsText = c => !(c.file in texts || c.file in autoTexts);
+const needsLabel = c => !(c.file in labels || c.file in autoLabels);
 // Letters of Ghanaian orthographies (Akan, Ewe, Ga, Dagbani and other Gur languages, Hausa) plus common
 // IPA extras, and combining tone/nasal marks that attach to the letter before them.
 const CHARS = ["ɛ", "ɔ", "ŋ", "ɖ", "ƒ", "ɣ", "ʋ", "ɩ", "ʊ", "ʒ", "ɲ", "ɓ", "ɗ", "ƙ", "ƴ", "ə", "ɪ", "ɨ", "ʉ", "ɑ", "ʃ", "ʔ", "ɡ", "ɟ", "ɸ", "β"];
@@ -640,7 +642,8 @@ function rate(v) {
   delete autoBad[c.file];
   if (v) ratings[c.file] = v; else delete ratings[c.file];
   enforce(c);
-  if (v === "good" && api && api.transcribe && needsAI(c)) transcribe(c);
+  if (v === "good" && api && api.transcribe && needsText(c)) aiJob(c, "transcribe");
+  if (v === "good" && api && api.labels && needsLabel(c)) aiJob(c, "label");
   save();
   const key = c.file, keepPos = current;
   render();
@@ -756,7 +759,8 @@ if (SIL.auto) {
 const dlg = document.getElementById("txDlg"), dlgText = document.getElementById("dlgText");
 let dlgClip = null;
 function txStateHtml(c) {
-  if (busy.has(c.file)) return `<span class="busy">✨ transcribing and labelling…</span>`;
+  const working = [busy.transcribe.has(c.file) && "transcribing", busy.label.has(c.file) && "labelling"].filter(Boolean);
+  if (working.length) return `<span class="busy">✨ ${working.join(" and ")}…</span>`;
   if (isChecked(c)) return "✔ checked";
   const name = { gemini: "✨ AI", loaded: "from your data", none: "missing" };
   const parts = [];
@@ -778,11 +782,15 @@ function renderSuggestions(c) {
   if (c.file in autoLabels) rows.push(["✨ AI label", autoLabels[c.file], dlgLabel]);
   if (c.label) rows.push(["Label from your data", c.label, dlgLabel]);
   let html = rows.map(([k, v], n) => `<div><b>${k}:</b><span class="t">${esc(v)}</span><button type="button" data-use="${n}">Use</button></div>`).join("");
-  if (api && api.transcribe) html += `<div><button type="button" id="dlgGem">${busy.has(c.file) ? "✨ working…" : (c.file in autoTexts ? "↻ Ask Gemini again" : "✨ Transcribe & label with Gemini")}</button>
-    <span>(uses the clip as trimmed and cut now)</span></div>`;
+  const again = (job, has, name) => busy[job].has(c.file) ? `✨ ${name === "transcript" ? "transcribing" : "labelling"}…` : `${has ? "↻" : "✨"} ${name === "transcript" ? "Transcribe" : "Label"}${has ? " again" : ""}`;
+  const btns = [];
+  if (api && api.transcribe) btns.push(`<button type="button" id="dlgAsr">${again("transcribe", c.file in autoTexts, "transcript")}</button>`);
+  if (api && api.labels) btns.push(`<button type="button" id="dlgLbl">${again("label", c.file in autoLabels, "label")}</button>`);
+  if (btns.length) html += `<div>${btns.join("")}<span>(uses the clip as trimmed and cut now)</span></div>`;
   const box = document.getElementById("dlgSugg"); box.innerHTML = html;
   box.querySelectorAll("[data-use]").forEach(b => b.onclick = () => { const [, v, el] = rows[+b.dataset.use]; el.value = v; el.focus(); });
-  const g = document.getElementById("dlgGem"); if (g) g.onclick = () => transcribe(c, true);
+  const a = document.getElementById("dlgAsr"); if (a) a.onclick = () => aiJob(c, "transcribe", true);
+  const l = document.getElementById("dlgLbl"); if (l) l.onclick = () => aiJob(c, "label", true);
 }
 const dlgLabel = document.getElementById("dlgLabel");
 function openTranscript(c) {
@@ -835,24 +843,31 @@ dlgPad.addEventListener("click", ev => {
   insertChar(dlgText, b.dataset.ch);
 });
 let aiBatch = false, lastAIError = "";
-async function transcribe(c, force = false) {
-  if (!api || !api.transcribe || busy.has(c.file)) return;
-  busy.add(c.file); refreshRowText(c); if (dlgClip === c) renderSuggestions(c);
+// job "transcribe" (Google's free endpoint or Gemini, per serve.py --asr) or "label" (Gemini).
+async function aiJob(c, job, force = false) {
+  if (!api || !(job === "transcribe" ? api.transcribe : api.labels) || busy[job].has(c.file)) return false;
+  busy[job].add(c.file); refreshRowText(c); if (dlgClip === c) renderSuggestions(c);
   try {
-    const r = await fetch("api/transcribe", { method: "POST", headers: { "Content-Type": "application/json" },
+    const r = await fetch("api/" + job, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ src: c.src, trim: trims[c.file] || null, cuts: cutsOf(c) }) });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || r.status);
-    autoTexts[c.file] = j.text; autoLabels[c.file] = j.label; save(); refreshLabelOptions();
-    if (dlgClip === c && (force || !dlgText.value.trim() || dlgText.value === c.text)) dlgText.value = j.text;
-    if (dlgClip === c && (force || !dlgLabel.value.trim() || dlgLabel.value === c.label)) dlgLabel.value = j.label;
+    if (job === "transcribe") {
+      if (!j.text) throw new Error("no speech recognised");
+      autoTexts[c.file] = j.text;
+      if (dlgClip === c && (force || !dlgText.value.trim() || dlgText.value === c.text)) dlgText.value = j.text;
+    } else {
+      autoLabels[c.file] = j.label; refreshLabelOptions();
+      if (dlgClip === c && (force || !dlgLabel.value.trim() || dlgLabel.value === c.label)) dlgLabel.value = j.label;
+    }
+    save();
     return true;
   } catch (err) {
     lastAIError = err.message === "Failed to fetch" ? "lost the connection to the review server" : err.message;
-    if (!aiBatch) toast(`Gemini failed: ${lastAIError}`);
+    if (!aiBatch) toast(`${job === "transcribe" ? "Transcription" : "Labelling"} failed for ${c.file}: ${lastAIError}`);
     return false;
   } finally {
-    busy.delete(c.file); refreshRowText(c); if (dlgClip === c) renderSuggestions(c);
+    busy[job].delete(c.file); refreshRowText(c); if (dlgClip === c) renderSuggestions(c);
   }
 }
 // ---- dataset download / Hugging Face push (via serve.py) ---------------------
@@ -933,19 +948,22 @@ $("hfGo").onclick = async () => {
   go.disabled = false;
 };
 
-// Transcribe every passed clip that has neither your transcript nor Gemini's yet (3 at a time).
-$("txAll").onclick = async () => {
-  const todo = CLIPS.filter(c => ratings[c.file] === "good" && needsAI(c) && !busy.has(c.file));
-  if (!todo.length) { toast("Every passed clip already has a transcript and a label"); return; }
-  toast(`Transcribing and labelling ${todo.length} passed clips with Gemini…`);
+// Batch buttons: transcribe / label every passed clip still missing one (3 at a time).
+async function runBatch(job) {
+  const need = job === "transcribe" ? needsText : needsLabel, what = job === "transcribe" ? "transcript" : "label";
+  const todo = CLIPS.filter(c => ratings[c.file] === "good" && need(c) && !busy[job].has(c.file));
+  if (!todo.length) { toast(`Every passed clip already has a ${what}`); return; }
+  toast(`${job === "transcribe" ? "Transcribing" : "Labelling"} ${todo.length} passed clips…`);
   let done = 0, failed = 0;
   aiBatch = true;
-  const worker = async () => { while (todo.length) { if (await transcribe(todo.shift())) done++; else failed++; } };
+  const worker = async () => { while (todo.length) { if (await aiJob(todo.shift(), job)) done++; else failed++; } };
   await Promise.all([worker(), worker(), worker()]);
   aiBatch = false;
-  toast(failed ? `${done} clips filled in, ${failed} failed (${lastAIError}). Click AI-fill again to retry just those`
-               : `Done: ${done} clips filled in. Use the Unchecked filter to review them`);
-};
+  toast(failed ? `${done} ${what}s added, ${failed} failed (${lastAIError}). Click the button again to retry just those`
+               : `Done: ${done} ${what}s added. Use the Unchecked filter to review them`);
+}
+$("txAll").onclick = () => runBatch("transcribe");
+$("lbAll").onclick = () => runBatch("label");
 
 // Served by serve.py? Then Gemini transcription and dataset export are available.
 if (location.protocol.startsWith("http")) {
@@ -954,7 +972,9 @@ if (location.protocol.startsWith("http")) {
     if (api) syncFromServer();
     if (api && api.export) { document.getElementById("dlData").hidden = false; document.getElementById("pushHF").hidden = false; }
     if (api && api.transcribe) document.getElementById("txAll").hidden = false;
-    if (api && api.transcribe) toast(`Gemini transcription on (${api.model}${api.language ? ", " + api.language : ""}): clips are transcribed when you pass them`);
+    if (api && api.labels) document.getElementById("lbAll").hidden = false;
+    if (api && (api.transcribe || api.labels)) toast([api.transcribe && `transcripts: ${api.asr}`, api.labels && `labels: Gemini`]
+      .filter(Boolean).join(" · ") + ": filled in when you pass a clip");
   }).catch(() => {});
 }
 refreshLabelOptions();
