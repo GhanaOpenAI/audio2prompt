@@ -192,7 +192,9 @@
     <label class="sugg" style="flex-direction:row;align-items:center;gap:8px">Label
       <input id="dlgLabel" list="labelOptions" placeholder="voice - emotion" style="flex:1;font:inherit;font-size:14px;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:6px 8px"></label>
     <div class="sugg" id="dlgSugg"></div>
-    <div class="dlg-actions"><button value="cancel">Cancel</button><button value="save" class="primary" id="dlgSave">Save &amp; mark checked</button></div>
+    <div class="dlg-actions"><span class="sugg" id="dlgLeft" style="margin-right:auto"></span><button value="cancel">Close</button>
+      <button type="button" id="dlgSkip" title="Go to the next clip to check without saving this one">Skip ▶</button>
+      <button type="button" class="primary" id="dlgSave" title="Ctrl+Enter">Save &amp; next ▶</button></div>
   </form>
 </dialog>
 <script>
@@ -789,20 +791,42 @@ function openTranscript(c) {
   dlgText.value = textOf(c); dlgLabel.value = labelOf(c);
   document.getElementById("dlgPad").innerHTML = charpadHtml();
   renderSuggestions(c);
-  dlg.showModal(); dlgText.focus();
+  const left = CLIPS.filter(x => ratings[x.file] === "good" && !isChecked(x)).length;
+  document.getElementById("dlgLeft").textContent = `${left} passed clip${left === 1 ? "" : "s"} left to check`;
+  if (!dlg.open) dlg.showModal();
+  dlgText.focus();
 }
-dlg.addEventListener("close", () => {
-  if (dlg.returnValue === "save" && dlgClip) {
-    texts[dlgClip.file] = dlgText.value.trim(); labels[dlgClip.file] = dlgLabel.value.trim();
-    save(); refreshLabelOptions(); refreshRowText(dlgClip); toast("Transcript and label checked");
-  }
-  dlgClip = null;
-});
+dlg.addEventListener("close", () => { dlgClip = null; player.pause(); });
+// The next passed clip still to check, after `c` in list order (wrapping round), or null.
+function nextToReview(c) {
+  const todo = CLIPS.filter(x => ratings[x.file] === "good" && !isChecked(x) && x !== c);
+  return todo.find(x => CLIPS.indexOf(x) > CLIPS.indexOf(c)) || todo[0] || null;
+}
+function playInPopup(c) {
+  const i = view.indexOf(c); if (i < 0) return;  // filtered out of the list: use ▶ Play after changing the filter
+  select(i); highlight(); playCurrent();
+}
+// Load the next clip to check into the open popup (or close it when none are left).
+function reviewNext(from) {
+  const n = nextToReview(from);
+  if (filter === "unchecked") render();  // the clip just checked leaves this list
+  if (!n) { dlg.close("done"); toast("All passed clips are checked"); return; }
+  openTranscript(n); playInPopup(n);
+}
+document.getElementById("dlgSave").onclick = () => {
+  const c = dlgClip; if (!c) return;
+  texts[c.file] = dlgText.value.trim(); labels[c.file] = dlgLabel.value.trim();
+  save(); refreshLabelOptions(); refreshRowText(c);
+  reviewNext(c);
+};
+document.getElementById("dlgSkip").onclick = () => { if (dlgClip) reviewNext(dlgClip); };
 dlgText.addEventListener("keydown", e => {
-  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); dlg.returnValue = "save"; dlg.close("save"); }
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); document.getElementById("dlgSave").click(); }
 });
-document.getElementById("dlgSave").onclick = e => { e.preventDefault(); dlg.close("save"); };
-document.getElementById("dlgPlay").onclick = () => { if (dlgClip) { current = view.indexOf(dlgClip); playCurrent(); } };
+dlgLabel.addEventListener("keydown", e => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); document.getElementById("dlgSave").click(); }
+});
+document.getElementById("dlgPlay").onclick = () => { if (dlgClip) playInPopup(dlgClip); };
 const dlgPad = document.getElementById("dlgPad");
 dlgPad.addEventListener("mousedown", ev => ev.preventDefault());  // keep the cursor in the text box
 dlgPad.addEventListener("click", ev => {

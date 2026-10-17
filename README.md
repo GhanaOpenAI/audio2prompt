@@ -118,8 +118,10 @@ python build.py path/to/clips --min-duration 2 --max-duration 15   # allowed kep
 - **Transcript and label for every clip you pass:** a clip marked ✓ good gets a **✎ Review** button
   (or press `T`) and a label field.
   - The popup has ▶ Play, the transcript, the label, and the suggestions available (Gemini's, and the
-    text/label the clip came with), each with **Use**. **Save & mark checked** (or `Ctrl+Enter`) confirms
-    both. The row shows "✔ checked" or what is still AI-generated / from your data.
+    text/label the clip came with), each with **Use**. **Save & next** (or `Ctrl+Enter`) confirms both
+    and loads the next passed clip still to check into the same popup, playing it, so you can go
+    through them one after another; **Skip** moves on without saving. The row shows "✔ checked" or
+    what is still AI-generated / from your data.
   - The **Unchecked** filter lists passed clips whose transcript or label you haven't confirmed.
   - Under the text, a character pad has the letters of Ghanaian orthographies and IPA that most
     keyboards lack (ɛ ɔ ŋ ɖ ƒ ɣ ʋ ɩ ʊ ʒ ɲ, Hausa ɓ ɗ ƙ ƴ, ə ɪ ɨ ʉ ɑ ʃ ʔ ɡ ɟ ɸ β), ⇧ for capitals, and
