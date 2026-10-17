@@ -128,6 +128,7 @@ def main():
     ap.add_argument("--text-col", default="text", help="meta column shown in bold (e.g. transcript)")
     ap.add_argument("--subtitle-col", default="subtitle", help="meta column shown under the text (e.g. translation)")
     ap.add_argument("--tags-col", default="tags", help="meta column with short tags (list, or ';'-separated)")
+    ap.add_argument("--label-col", default="label", help="meta column pre-filling each clip's editable label")
     ap.add_argument("--notes-col", default="notes", help="meta column hidden until 'show notes' is ticked")
     a = ap.parse_args()
 
@@ -204,6 +205,7 @@ def main():
         clips.append({
             "n": len(clips) + 1, "file": key.replace(os.sep, "/"), "src": src.replace(os.sep, "/"),
             "text": str(row.get(a.text_col) or ""), "subtitle": str(row.get(a.subtitle_col) or ""),
+            "label": str(row.get(a.label_col) or ""),
             "tags": [str(t) for t in tags], "notes": notes,
             "dur": dur, "peaks": pk, "speech": [list(s) for s in speech] if speech else None,
         })

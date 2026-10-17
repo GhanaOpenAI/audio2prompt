@@ -82,6 +82,7 @@ def main():
     files = list(picks.get("good", [])) + (list(picks.get("unrated", [])) if a.include_unrated else [])
     trims = picks.get("trims", {})
     cuts = picks.get("cuts", {})
+    transcripts, labels = picks.get("transcripts", {}), picks.get("labels", {})
     min_dur = a.min_duration if a.min_duration is not None else float(picks.get("min_duration") or 0)
     max_dur = a.max_duration if a.max_duration is not None else float(picks.get("max_duration") or 0)
     os.makedirs(a.out_dir, exist_ok=True)
@@ -104,12 +105,13 @@ def main():
             continue
         data = splice(data, sr, segs)
         sf.write(dst, data, sr, subtype=info.subtype, format=info.format)
-        rows.append({"file": rel, "start_sec": round(start, 3), "end_sec": round(end, 3),
+        rows.append({"file": rel, "text": transcripts.get(rel, ""), "label": labels.get(rel, ""),
+                     "start_sec": round(start, 3), "end_sec": round(end, 3),
                      "cuts": json.dumps(cuts.get(rel, [])), "duration_sec": round(len(data) / sr, 3),
                      "trimmed": rel in trims or bool(cuts.get(rel))})
 
     with open(os.path.join(a.out_dir, "manifest.csv"), "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["file", "start_sec", "end_sec", "cuts", "duration_sec", "trimmed"])
+        w = csv.DictWriter(f, fieldnames=["file", "text", "label", "start_sec", "end_sec", "cuts", "duration_sec", "trimmed"])
         w.writeheader()
         w.writerows(rows)
     print(f"wrote {len(rows)} clips ({sum(r['trimmed'] for r in rows)} trimmed or cut) to {a.out_dir}")

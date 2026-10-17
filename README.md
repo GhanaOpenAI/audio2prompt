@@ -105,6 +105,14 @@ python build.py path/to/clips --min-duration 2 --max-duration 15   # allowed kep
   a 10 ms crossfade so the join doesn't click.
 - **Playback only covers what you're keeping**: it starts at the trim start, jumps over cuts and stops
   at the trim end, so you hear exactly what will be exported.
+- **Transcript and label for every clip you pass:** marking a clip ✓ good opens a transcript box
+  (pre-filled with the clip's text, if any) and a label field. Labels are free text, so you don't
+  need any loaded, but every label you type becomes a choice in the field's dropdown, so you only
+  type it once. Pre-fill labels from your metadata with `--label-col` (default `label`).
+  - Under the boxes, a character pad has the letters of Ghanaian orthographies and IPA that most
+    keyboards lack (ɛ ɔ ŋ ɖ ƒ ɣ ʋ ɩ ʊ ʒ ɲ, Hausa ɓ ɗ ƙ ƴ, ə ɪ ɨ ʉ ɑ ʃ ʔ ɡ ɟ ɸ β), ⇧ for capitals, and
+    tone/nasal marks (◌́ ◌̀ ◌̂ ◌̌ ◌̃ ◌̄) that attach to the letter before the cursor. Click to insert.
+  - Keyboard shortcuts are off while you type in these boxes.
 - **Allowed length:** what a clip keeps after trims and cuts must be between `--min-duration` and
   `--max-duration` (defaults **3 s** and **10 s**, the usual range for voice-cloning reference audio).
   - Too short, whether it started short or you trimmed it down: **marked bad automatically**, ✓ disabled.
@@ -121,6 +129,7 @@ python build.py path/to/clips --min-duration 2 --max-duration 15   # allowed kep
 ```json
 { "good": ["a.wav"], "bad": ["b.wav"], "unrated": ["c.wav"],
   "trims": { "a.wav": [0.52, 4.62] }, "cuts": { "a.wav": [[1.9, 2.4]] },
+  "transcripts": { "a.wav": "Me pɛ sɛ wo ba ha" }, "labels": { "a.wav": "greeting" },
   "min_duration": 3.0, "max_duration": 10.0 }
 ```
 
@@ -133,7 +142,7 @@ python apply_picks.py picks.json review/clips selected/ --include-unrated    # p
 ```
 
 Clips keep their relative paths and audio format; `selected/manifest.csv` records each clip's
-trim, cuts and final duration. Clips outside the allowed length after trimming are skipped (the limits
+transcript, label, trim, cuts and final duration. Clips outside the allowed length after trimming are skipped (the limits
 saved in `picks.json`, or `--min-duration` / `--max-duration`).
 
 ## Metadata file
@@ -147,6 +156,7 @@ name or relative path:
 | `text` | bold line, e.g. the transcript |
 | `subtitle` | line under it, e.g. a translation |
 | `tags` | small labels (`;`-separated in CSV, or a list in JSON) |
+| `label` | pre-fills the editable label |
 | `notes` | hidden until *show notes* is ticked, e.g. automatic QC results |
 
 Different column names? Map them: `--text-col transcript --subtitle-col english --notes-col qc`.
