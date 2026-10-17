@@ -129,8 +129,11 @@ python build.py path/to/clips --min-duration 2 --max-duration 15   # allowed kep
 - **Click the waveform** to play from that point.
 - **Filters:** All / Unrated / Good / Bad. Use *Unrated* to work through what's left.
 - **Notes are hidden by default** so automatic checks don't bias your ears; tick *show notes* to see them.
-- **Progress is saved in the browser** (localStorage) as you go, so you can close the page and come back.
-  Rebuilding with the same title and files keeps your progress.
+- **Progress is saved as you go**: in the browser, and, when the page is opened through `serve.py`, also
+  in `<review>/progress.json`, so it survives other browsers, cleared browser data and restarts.
+  Rebuilding with the same title and files keeps your progress. Browsers keep the file-opened page
+  (`file://…/index.html`) and the served one (`http://localhost:8765`) separate: to move work from one
+  to the other, use **Download picks** there and **Load picks** here.
 - **Download picks** saves `picks.json`; **Load picks** reads one back in (to resume on another machine,
   merge a colleague's review, or carry progress over to a rebuilt page). Keys can be file paths or clip numbers.
 

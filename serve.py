@@ -50,6 +50,9 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if self.path.split("?")[0].endswith("/api/progress"):
+            f = os.path.join(self.cfg["root"], "progress.json")
+            return self._json(200, json.load(open(f, encoding="utf-8")) if os.path.exists(f) else {})
         if self.path.split("?")[0].endswith("/api/status"):
             c = self.cfg
             return self._json(200, {"transcribe": bool(c["key"]), "model": c["model"], "language": c["language"],
@@ -75,6 +78,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._push()
         if route.endswith("/api/hf/connect"):
             return self._hf_connect()
+        if route.endswith("/api/progress"):
+            return self._save_progress()
         if not route.endswith("/api/transcribe"):
             return self._json(404, {"error": "not found"})
         c = self.cfg
@@ -136,6 +141,20 @@ class Handler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
         except Exception as e:
             return self._json(500, {"error": str(e)[:300]})
+
+    def _save_progress(self):
+        """Keep the reviewer's work (ratings, trims, cuts, transcripts, labels) in <review>/progress.json,
+        so it survives other browsers, cleared browser data and restarts."""
+        try:
+            state = self._read()
+            f = os.path.join(self.cfg["root"], "progress.json")
+            with self.lock:
+                with open(f + ".tmp", "w", encoding="utf-8") as out:
+                    json.dump(state, out, ensure_ascii=False)
+                os.replace(f + ".tmp", f)
+            return self._json(200, {"saved": True})
+        except Exception as e:
+            return self._json(500, {"error": str(e)[:200]})
 
     def _hf_connect(self):
         """Check a Hugging Face token (or this machine's login) and list the namespaces it can push to.

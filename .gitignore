@@ -8,3 +8,4 @@ __pycache__/
 gemini_transcripts.json
 transcripts*.csv
 transcripts*.cache.json
+progress.json

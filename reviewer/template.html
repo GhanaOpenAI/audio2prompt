@@ -205,7 +205,34 @@ const save = () => {
     localStorage.setItem(STORE + ":texts", JSON.stringify(texts)); localStorage.setItem(STORE + ":labels", JSON.stringify(labels));
     localStorage.setItem(STORE + ":autotexts", JSON.stringify(autoTexts));
   } catch (e) {}
+  if (api) scheduleSync();
 };
+// When served by serve.py, your work is also saved in <review>/progress.json (see syncFromServer).
+const stateMaps = () => ({ ratings, trims, cuts, autoBad, silDone, texts, labels, autoTexts });
+let syncTimer = 0;
+function scheduleSync() {
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => {
+    fetch("api/progress", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(stateMaps()) })
+      .catch(() => toast("Could not save progress to the server (it is still saved in this browser)"));
+  }, 600);
+}
+window.addEventListener("beforeunload", () => {
+  if (api) navigator.sendBeacon("api/progress", new Blob([JSON.stringify(stateMaps())], { type: "application/json" }));
+});
+// Merge what the server has into this browser's copy (this browser wins where both have a value).
+async function syncFromServer() {
+  try {
+    const srv = await (await fetch("api/progress")).json();
+    let added = 0;
+    const cur = stateMaps();
+    for (const [name, map] of Object.entries(cur)) {
+      for (const [k, v] of Object.entries(srv[name] || {})) if (!(k in map)) { map[k] = v; added++; }
+    }
+    if (added) { CLIPS.forEach(enforce); render(); refreshLabelOptions(); toast(`Loaded ${added} saved changes from the server`); }
+    save();  // writes the merged state back to the server
+  } catch (e) {}
+}
 
 let filter = "all", current = 0, view = [];
 const list = document.getElementById("list"), player = document.getElementById("player");
@@ -831,6 +858,7 @@ $("txAll").onclick = async () => {
 if (location.protocol.startsWith("http")) {
   fetch("api/status").then(r => r.ok ? r.json() : null).then(j => {
     api = j;
+    if (api) syncFromServer();
     if (api && api.export) { document.getElementById("dlData").hidden = false; document.getElementById("pushHF").hidden = false; }
     if (api && api.transcribe) document.getElementById("txAll").hidden = false;
     if (api && api.transcribe) toast(`Gemini transcription on (${api.model}${api.language ? ", " + api.language : ""}): clips are transcribed when you pass them`);
