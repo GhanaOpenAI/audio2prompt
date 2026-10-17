@@ -71,28 +71,6 @@ Speed: about **24 clips/s on a 6-core laptop CPU** for typical 2–8 s clips (fo
 Clips longer than `--max-duration` (10 s) can still be shortlisted; the review page makes you trim
 them before they can pass. `--reject-longer-than` (30 s) drops very long clips outright.
 
-## Quick start
-
-```bash
-git clone https://github.com/GhanaOpenAI/audio2prompt.git
-cd audio2prompt
-pip install -r requirements.txt          # numpy, soundfile
-
-# try it on the synthetic demo clips
-python example/make_demo.py
-python build.py example/audio --meta example/clips.csv --out example/review --title "Demo review"
-# open example/review/index.html in your browser
-```
-
-On your own data:
-
-```bash
-python build.py path/to/clips                       # -> review/index.html
-python build.py path/to/clips --meta clips.csv      # show transcripts / notes next to each clip
-python build.py path/to/clips --copy --out review   # copies audio in, so you can zip and share the folder
-python build.py path/to/clips --min-duration 2 --max-duration 15   # allowed kept length (defaults 3 and 10 s, 0 = off)
-```
-
 ## Building a review from your own clips
 
 ```bash
