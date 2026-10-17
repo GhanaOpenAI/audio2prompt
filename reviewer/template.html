@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --surface: #ffffff; --ink: #1d1d1b; --muted: #6b6a64; --line: #e3e1da;
+    --accent: #b5651d; --good: #2f7d4f; --good-bg: #e6f2ea; --bad: #b23b3b; --bad-bg: #f8e7e5;
+    --active: #fff6e8; --chip: #efede6; --wave: #b9b6ab; --wave-in: #3d3c38; --cut: rgba(178, 59, 59, .10);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #161614; --surface: #1f1f1c; --ink: #ecebe6; --muted: #9b998f; --line: #33322d;
+      --accent: #e0954e; --good: #5fbf86; --good-bg: #1d3326; --bad: #e07a72; --bad-bg: #3a2220;
+      --active: #2b2619; --chip: #2a2925; --wave: #4a4943; --wave-in: #d8d6cd; --cut: rgba(224, 122, 114, .12);
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: 1px solid var(--line);
+           padding: 14px 16px 10px; }
+  .top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; max-width: 980px; margin: 0 auto; }
+  h1 { font-size: 18px; margin: 0; letter-spacing: -.01em; }
+  .progress { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .progress b { color: var(--ink); }
+  .bar { height: 4px; background: var(--line); border-radius: 2px; max-width: 980px; margin: 10px auto 0; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .2s; }
+  .controls { display: flex; flex-wrap: wrap; gap: 6px; max-width: 980px; margin: 10px auto 0; align-items: center; }
+  .chip { border: 1px solid var(--line); background: var(--chip); color: var(--ink); border-radius: 999px;
+          padding: 4px 11px; font: inherit; font-size: 13px; cursor: pointer; }
+  .chip[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .spacer { flex: 1; }
+  .btn { border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 8px;
+         padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  label.toggle { font-size: 13px; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+  .keys { max-width: 980px; margin: 8px auto 0; font-size: 12px; color: var(--muted); }
+  kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px;
+        padding: 0 4px; background: var(--surface); }
+  main { max-width: 980px; margin: 0 auto; padding: 12px 16px 80px; }
+  .row { display: grid; grid-template-columns: 44px 1fr auto; gap: 12px; align-items: start;
+         background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+  .row.active { background: var(--active); border-color: var(--accent); }
+  .row.good { box-shadow: inset 4px 0 0 var(--good); }
+  .row.bad { box-shadow: inset 4px 0 0 var(--bad); opacity: .72; }
+  .play { width: 44px; height: 44px; border-radius: 50%; border: none; background: var(--ink); color: var(--bg);
+          cursor: pointer; font-size: 16px; display: grid; place-items: center; }
+  .play.on { background: var(--accent); color: #fff; }
+  .text { font-weight: 600; }
+  .subtitle { color: var(--muted); }
+  .meta { font-size: 12px; color: var(--muted); margin-top: 3px; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+  .meta .trimmed { color: var(--accent); font-weight: 600; }
+  .meta button { border: none; background: none; color: var(--muted); font: inherit; text-decoration: underline; cursor: pointer; padding: 0; }
+  .wave { display: block; width: 100%; height: 48px; margin-top: 6px; cursor: pointer; touch-action: none; border-radius: 4px; }
+  .notes { font-size: 12px; margin-top: 4px; color: var(--muted); }
+  body.blind .notes { display: none; }
+  .rate { display: flex; gap: 6px; }
+  .rate button { width: 40px; height: 40px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface);
+                 color: var(--muted); font-size: 18px; cursor: pointer; }
+  .rate .g[aria-pressed="true"] { background: var(--good-bg); color: var(--good); border-color: var(--good); }
+  .rate .b[aria-pressed="true"] { background: var(--bad-bg); color: var(--bad); border-color: var(--bad); }
+  .num { font-variant-numeric: tabular-nums; }
+  .empty { text-align: center; color: var(--muted); padding: 40px 0; }
+  @media (max-width: 560px) {
+    .row { grid-template-columns: 40px 1fr; }
+    .rate { grid-column: 1 / -1; justify-content: flex-end; }
+    .play { width: 40px; height: 40px; }
+  }
+</style>
+</head>
+<body class="blind">
+<header>
+  <div class="top">
+    <h1>__TITLE__</h1>
+    <span class="progress"><b id="rated">0</b> / <span id="total">0</span> rated · <b id="goodN">0</b> good · <b id="badN">0</b> bad · <b id="trimN">0</b> trimmed</span>
+  </div>
+  <div class="bar"><i id="barFill"></i></div>
+  <div class="controls">
+    <button class="chip" data-f="all" aria-pressed="true">All</button>
+    <button class="chip" data-f="unrated" aria-pressed="false">Unrated</button>
+    <button class="chip" data-f="good" aria-pressed="false">Good</button>
+    <button class="chip" data-f="bad" aria-pressed="false">Bad</button>
+    <label class="toggle" id="notesToggle"><input type="checkbox" id="showNotes"> show notes</label>
+    <label class="toggle"><input type="checkbox" id="autoNext" checked> auto-play next</label>
+    <span class="spacer"></span>
+    <button class="btn" id="reset">Reset</button>
+    <button class="btn primary" id="export">Download picks</button>
+  </div>
+  <div class="keys"><kbd>Space</kbd> play/pause · <kbd>G</kbd> good · <kbd>B</kbd> bad · <kbd>U</kbd> clear · <kbd>↓</kbd>/<kbd>J</kbd> next · <kbd>↑</kbd>/<kbd>K</kbd> previous · <kbd>R</kbd> replay ·
+    trim: drag the handles on the waveform, or <kbd>[</kbd> start / <kbd>]</kbd> end at the playhead, <kbd>X</kbd> undo trim · click the waveform to play from there</div>
+</header>
+<main id="list"></main>
+<audio id="player" preload="auto"></audio>
+<script>
+// Generated by audio-clip-reviewer (build.py). Each clip: {file, text, subtitle, tags, notes, dur, peaks}.
+const CLIPS = __CLIPS__;
+const STORE = "audio-clip-reviewer:" + __STORE_ID__;
+const load = k => { try { return JSON.parse(localStorage.getItem(STORE + k) || "{}"); } catch (e) { return {}; } };
+let ratings = load(":ratings"), trims = load(":trims");
+const save = () => {
+  try { localStorage.setItem(STORE + ":ratings", JSON.stringify(ratings)); localStorage.setItem(STORE + ":trims", JSON.stringify(trims)); } catch (e) {}
+};
+
+let filter = "all", current = 0, view = [];
+const list = document.getElementById("list"), player = document.getElementById("player");
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const trimOf = c => trims[c.file] || [0, c.dur];
+const fmt = s => s.toFixed(2) + "s";
+const esc = s => String(s ?? "").replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+if (!CLIPS.some(c => c.notes)) document.getElementById("notesToggle").style.display = "none";
+
+function metaHtml(c) {
+  const [s, e] = trimOf(c), cut = trims[c.file];
+  return `<span class="num">#${c.n}</span><span>${esc(c.file)}</span>` +
+    (cut ? `<span class="trimmed num">trimmed ${fmt(s)} → ${fmt(e)} (${fmt(e - s)} of ${fmt(c.dur)})</span><button data-act="untrim">undo trim</button>`
+         : `<span class="num">${fmt(c.dur)}</span>`) +
+    (c.tags || []).map(t => `<span>${esc(t)}</span>`).join("");
+}
+
+// ---- waveform -------------------------------------------------------------
+function drawWave(i) {
+  const row = list.querySelector(`.row[data-i="${i}"]`); if (!row) return;
+  const c = view[i], cv = row.querySelector("canvas"), dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight; if (!w) return;
+  if (cv.width !== w * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
+  const ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
+  const [s, e] = trimOf(c), xs = s / c.dur * w, xe = e / c.dur * w, n = c.peaks.length, bw = w / n;
+  const waveIn = css("--wave-in"), waveOut = css("--wave");
+  ctx.fillStyle = css("--cut"); ctx.fillRect(0, 0, xs, h); ctx.fillRect(xe, 0, w - xe, h);
+  for (let k = 0; k < n; k++) {
+    const x = k * bw, a = Math.max(1, c.peaks[k] * (h / 2 - 3));
+    ctx.fillStyle = (x + bw / 2 >= xs && x + bw / 2 <= xe) ? waveIn : waveOut;
+    ctx.fillRect(x, h / 2 - a, Math.max(1, bw - .6), a * 2);
+  }
+  ctx.fillStyle = css("--accent");
+  for (const x of [xs, xe]) { ctx.fillRect(Math.round(x) - 1, 0, 2, h); ctx.fillRect(Math.round(x) - 5, 0, 10, 6); ctx.fillRect(Math.round(x) - 5, h - 6, 10, 6); }
+  if (i === current && player.src.endsWith(c.src) && player.currentTime > 0) {
+    const xp = player.currentTime / c.dur * w; ctx.fillStyle = css("--ink"); ctx.fillRect(xp, 0, 1.5, h);
+  }
+}
+function drawAll() { view.forEach((_, i) => drawWave(i)); }
+
+function setTrim(c, s, e) {
+  s = Math.max(0, Math.min(s, c.dur)); e = Math.max(0, Math.min(e, c.dur));
+  if (e - s < 0.2) return false;
+  if (s < 0.01 && e > c.dur - 0.01) delete trims[c.file]; else trims[c.file] = [+s.toFixed(3), +e.toFixed(3)];
+  save(); return true;
+}
+function refreshMeta(i) {
+  const row = list.querySelector(`.row[data-i="${i}"]`); if (!row) return;
+  row.querySelector(".meta").innerHTML = metaHtml(view[i]); stats();
+}
+
+function attachWave(row, i) {
+  const cv = row.querySelector("canvas");
+  let drag = null;
+  const tAt = ev => { const r = cv.getBoundingClientRect(); return Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) * view[i].dur; };
+  cv.addEventListener("pointerdown", ev => {
+    select(i);
+    const c = view[i], [s, e] = trimOf(c), r = cv.getBoundingClientRect();
+    const px = ev.clientX - r.left, xs = s / c.dur * r.width, xe = e / c.dur * r.width;
+    if (Math.abs(px - xs) < 10 || Math.abs(px - xe) < 10) {
+      drag = Math.abs(px - xs) <= Math.abs(px - xe) ? "s" : "e";
+      cv.setPointerCapture(ev.pointerId); player.pause();
+    } else {
+      playFrom(Math.max(s, Math.min(tAt(ev), e - 0.05)));
+    }
+  });
+  cv.addEventListener("pointermove", ev => {
+    const c = view[i], r = cv.getBoundingClientRect(), px = ev.clientX - r.left, [s, e] = trimOf(c);
+    cv.style.cursor = (Math.abs(px - s / c.dur * r.width) < 10 || Math.abs(px - e / c.dur * r.width) < 10 || drag) ? "ew-resize" : "pointer";
+    if (!drag) return;
+    const t = tAt(ev);
+    if (drag === "s" ? setTrim(c, t, e) : setTrim(c, s, t)) { drawWave(i); refreshMeta(i); }
+  });
+  cv.addEventListener("pointerup", () => {
+    if (drag) { const c = view[i]; drag = null; playFrom(trimOf(c)[0]); }
+  });
+}
+
+// ---- list ----------------------------------------------------------------
+function render() {
+  view = CLIPS.filter(c => filter === "all" ? true : filter === "unrated" ? !ratings[c.file] : ratings[c.file] === filter);
+  list.innerHTML = view.length ? "" : `<div class="empty">Nothing here.</div>`;
+  view.forEach((c, i) => {
+    const r = ratings[c.file];
+    const row = document.createElement("div");
+    row.className = "row" + (r ? " " + r : "");
+    row.dataset.i = i;
+    row.innerHTML = `
+      <button class="play" title="Play">▶</button>
+      <div>
+        ${c.text ? `<div class="text">${esc(c.text)}</div>` : ""}
+        ${c.subtitle ? `<div class="subtitle">${esc(c.subtitle)}</div>` : ""}
+        <canvas class="wave"></canvas>
+        <div class="meta">${metaHtml(c)}</div>
+        ${c.notes ? `<div class="notes">${esc(c.notes)}</div>` : ""}
+      </div>
+      <div class="rate">
+        <button class="g" title="Good (G)" aria-pressed="${r === "good"}">✓</button>
+        <button class="b" title="Bad (B)" aria-pressed="${r === "bad"}">✕</button>
+      </div>`;
+    row.querySelector(".play").onclick = () => { select(i); toggle(); };
+    row.querySelector(".g").onclick = () => { select(i); rate("good"); };
+    row.querySelector(".b").onclick = () => { select(i); rate("bad"); };
+    row.querySelector(".meta").addEventListener("click", ev => {
+      if (ev.target.dataset.act === "untrim") { select(i); untrim(); }
+    });
+    attachWave(row, i);
+    list.appendChild(row);
+  });
+  current = Math.min(current, Math.max(0, view.length - 1));
+  highlight(false);
+  stats();
+  requestAnimationFrame(drawAll);
+}
+
+function stats() {
+  const vals = Object.values(ratings);
+  const good = vals.filter(v => v === "good").length, bad = vals.filter(v => v === "bad").length;
+  document.getElementById("rated").textContent = good + bad;
+  document.getElementById("total").textContent = CLIPS.length;
+  document.getElementById("goodN").textContent = good;
+  document.getElementById("badN").textContent = bad;
+  document.getElementById("trimN").textContent = Object.keys(trims).length;
+  document.getElementById("barFill").style.width = ((good + bad) / CLIPS.length * 100) + "%";
+}
+
+function highlight(scroll = true) {
+  list.querySelectorAll(".row").forEach(r => r.classList.toggle("active", +r.dataset.i === current));
+  const el = list.querySelector(`.row[data-i="${current}"]`);
+  if (scroll && el) el.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+function select(i) { if (i !== current) { player.pause(); const old = current; current = i; highlight(); drawWave(old); } }
+
+// ---- playback (always inside the trim window) ------------------------------
+function playFrom(t) {
+  const c = view[current]; if (!c) return;
+  if (!player.src.endsWith(c.src)) { player.src = c.src; player.load(); }
+  const go = () => { player.currentTime = t; player.play().catch(err => console.warn("play failed", err)); };
+  if (player.readyState >= 1) go(); else player.addEventListener("loadedmetadata", go, { once: true });
+}
+function playCurrent() { const c = view[current]; if (c) playFrom(trimOf(c)[0]); }
+function toggle() {
+  const c = view[current]; if (!c) return;
+  const [s, e] = trimOf(c), same = player.src.endsWith(c.src);
+  if (same && !player.paused) player.pause();
+  else if (same && player.currentTime > s && player.currentTime < e - 0.05) player.play();
+  else playCurrent();
+}
+function stopAtTrimEnd() {
+  const c = view[current];
+  if (c && player.src.endsWith(c.src) && !player.paused && player.currentTime >= trimOf(c)[1]) player.pause();
+}
+let raf = 0;
+function tick() {
+  stopAtTrimEnd(); drawWave(current);
+  if (!player.paused) raf = requestAnimationFrame(tick);
+}
+player.addEventListener("play", () => { syncIcons(); cancelAnimationFrame(raf); raf = requestAnimationFrame(tick); });
+player.addEventListener("pause", () => { syncIcons(); drawWave(current); });
+player.addEventListener("ended", syncIcons);
+player.addEventListener("timeupdate", stopAtTrimEnd);  // backup when animation frames are throttled
+function syncIcons() {
+  list.querySelectorAll(".row").forEach(r => {
+    const on = +r.dataset.i === current && !player.paused;
+    const b = r.querySelector(".play"); b.textContent = on ? "❚❚" : "▶"; b.classList.toggle("on", on);
+  });
+}
+
+function move(d) { if (!view.length) return; const old = current; current = Math.max(0, Math.min(view.length - 1, current + d)); player.pause(); highlight(); drawWave(old); }
+function rate(v) {
+  const c = view[current]; if (!c) return;
+  if (v) ratings[c.file] = v; else delete ratings[c.file];
+  save();
+  const key = c.file, keepPos = current;
+  render();
+  // with a filter like "unrated" the rated row disappears, so the next clip slides into place
+  const idx = view.findIndex(x => x.file === key);
+  current = idx >= 0 ? Math.min(idx + 1, view.length - 1) : Math.min(keepPos, view.length - 1);
+  highlight();
+  if (v && document.getElementById("autoNext").checked && view[current] && view[current].file !== key) playCurrent();
+}
+function trimAtPlayhead(which) {
+  const c = view[current]; if (!c || !player.src.endsWith(c.src)) return;
+  const [s, e] = trimOf(c), t = player.currentTime;
+  if (which === "s" ? setTrim(c, t, e) : setTrim(c, s, t)) { drawWave(current); refreshMeta(current); }
+}
+function untrim() { const c = view[current]; if (!c) return; delete trims[c.file]; save(); drawWave(current); refreshMeta(current); }
+
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" && e.target.type !== "checkbox") return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const k = e.key.toLowerCase();
+  if (k === " " || k === "enter") { e.preventDefault(); toggle(); }
+  else if (k === "g") rate("good");
+  else if (k === "b") rate("bad");
+  else if (k === "u") rate(null);
+  else if (k === "arrowdown" || k === "j") { e.preventDefault(); move(1); }
+  else if (k === "arrowup" || k === "k") { e.preventDefault(); move(-1); }
+  else if (k === "r") playCurrent();
+  else if (k === "[") trimAtPlayhead("s");
+  else if (k === "]") trimAtPlayhead("e");
+  else if (k === "x") untrim();
+});
+
+document.querySelectorAll(".chip").forEach(ch => ch.onclick = () => {
+  document.querySelectorAll(".chip").forEach(x => x.setAttribute("aria-pressed", x === ch));
+  filter = ch.dataset.f; current = 0; player.pause(); render();
+});
+document.getElementById("showNotes").onchange = e => document.body.classList.toggle("blind", !e.target.checked);
+document.getElementById("reset").onclick = () => {
+  if (confirm("Clear all your ratings and trims?")) { ratings = {}; trims = {}; save(); render(); }
+};
+document.getElementById("export").onclick = () => {
+  const good = CLIPS.filter(c => ratings[c.file] === "good").map(c => c.file);
+  const bad = CLIPS.filter(c => ratings[c.file] === "bad").map(c => c.file);
+  const out = { good, bad, unrated: CLIPS.filter(c => !ratings[c.file]).map(c => c.file), trims };
+  const blob = new Blob([JSON.stringify(out, null, 1)], { type: "application/json" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "picks.json"; a.click();
+};
+window.addEventListener("resize", () => requestAnimationFrame(drawAll));
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => requestAnimationFrame(drawAll));
+render();
+</script>
+</body>
+</html>

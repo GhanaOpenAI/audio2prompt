@@ -1,0 +1,7 @@
+file,text,subtitle,tags,notes
+clean_short.wav,A clean short line,synthetic demo · 6 syllables,demo;clean,start: clean · end: clean
+click_at_start.wav,Has a click at the start,synthetic demo · 8 syllables,demo;needs trim,start: click · end: clean
+noise_at_end.wav,Trailing noise at the end,synthetic demo · 7 syllables,demo;needs trim,start: clean · end: noise
+long_pause.wav,Pause in the middle,synthetic demo · 10 syllables,demo;clean,start: clean · end: clean
+both_ends.wav,Junk at both ends,synthetic demo · 9 syllables,demo;needs trim,start: noise · end: click
+clean_long.wav,A longer clean line,synthetic demo · 14 syllables,demo;clean,start: clean · end: clean

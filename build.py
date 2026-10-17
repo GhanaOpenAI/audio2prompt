@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""Build a self-contained HTML page for listening to, rating and trimming audio clips.
+
+    python build.py path/to/audio                              # every audio file under the folder
+    python build.py path/to/audio --meta clips.csv             # add text / notes per clip
+    python build.py path/to/audio --out review --copy          # portable folder you can zip and share
+
+Open <out>/index.html in a browser. Ratings and trims are saved in the browser as you go;
+"Download picks" exports them as picks.json for apply_picks.py.
+"""
+import argparse
+import csv
+import hashlib
+import json
+import os
+import shutil
+import sys
+
+import numpy as np
+import soundfile as sf
+
+AUDIO_EXTS = {".wav", ".flac", ".ogg", ".oga", ".opus", ".mp3", ".aiff", ".aif"}
+TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reviewer", "template.html")
+
+
+def find_audio(root):
+    files = []
+    for dirpath, _, names in os.walk(root):
+        for n in names:
+            if os.path.splitext(n)[1].lower() in AUDIO_EXTS:
+                files.append(os.path.relpath(os.path.join(dirpath, n), root))
+    return sorted(files)
+
+
+def load_meta(path):
+    """Rows keyed by file. Accepts .csv, .json (list of objects) or .jsonl."""
+    ext = os.path.splitext(path)[1].lower()
+    with open(path, encoding="utf-8") as f:
+        if ext == ".csv":
+            return list(csv.DictReader(f))
+        if ext == ".jsonl":
+            return [json.loads(line) for line in f if line.strip()]
+        data = json.load(f)
+        return data if isinstance(data, list) else [dict(v, file=k) for k, v in data.items()]
+
+
+def peaks(path, n=300):
+    data, sr = sf.read(path, dtype="float32", always_2d=True)
+    x = np.abs(data).max(axis=1)
+    dur = len(x) / sr
+    if len(x) < n:
+        x = np.pad(x, (0, n - len(x)))
+    b = len(x) // n
+    p = x[: b * n].reshape(n, b).max(axis=1)
+    p = p / (p.max() + 1e-9)
+    return round(dur, 3), [round(float(v), 2) for v in p]
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("audio_dir", help="folder containing the audio clips (searched recursively)")
+    ap.add_argument("--meta", help="optional .csv / .json / .jsonl with one row per clip")
+    ap.add_argument("--out", default="review", help="output folder (default: review)")
+    ap.add_argument("--title", default="Audio clip review")
+    ap.add_argument("--copy", action="store_true",
+                    help="copy the audio into <out>/audio so the folder is self-contained (default: link by relative path)")
+    ap.add_argument("--file-col", default="file", help="meta column holding the file name / relative path")
+    ap.add_argument("--text-col", default="text", help="meta column shown in bold (e.g. transcript)")
+    ap.add_argument("--subtitle-col", default="subtitle", help="meta column shown under the text (e.g. translation)")
+    ap.add_argument("--tags-col", default="tags", help="meta column with short tags (list, or ';'-separated)")
+    ap.add_argument("--notes-col", default="notes", help="meta column hidden until 'show notes' is ticked")
+    a = ap.parse_args()
+
+    audio_dir = os.path.abspath(a.audio_dir)
+    out = os.path.abspath(a.out)
+    files = find_audio(audio_dir)
+    if not files:
+        sys.exit(f"No audio files ({', '.join(sorted(AUDIO_EXTS))}) found under {audio_dir}")
+
+    meta = {}
+    if a.meta:
+        for row in load_meta(a.meta):
+            key = str(row.get(a.file_col, "")).strip()
+            if key:
+                meta[key] = row
+                meta.setdefault(os.path.basename(key), row)
+
+    os.makedirs(out, exist_ok=True)
+    clips, skipped = [], []
+    for n, rel in enumerate(files, 1):
+        path = os.path.join(audio_dir, rel)
+        try:
+            dur, pk = peaks(path)
+        except Exception as e:  # unreadable / unsupported codec
+            skipped.append(f"{rel}: {e}")
+            continue
+        if a.copy:
+            dst = os.path.join(out, "audio", rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copyfile(path, dst)
+            src = os.path.join("audio", rel)
+        else:
+            src = os.path.relpath(path, out)
+        row = meta.get(rel) or meta.get(os.path.basename(rel)) or {}
+        tags = row.get(a.tags_col) or []
+        if isinstance(tags, str):
+            tags = [t.strip() for t in tags.split(";") if t.strip()]
+        clips.append({
+            "n": n, "file": rel.replace(os.sep, "/"), "src": src.replace(os.sep, "/"),
+            "text": str(row.get(a.text_col) or ""), "subtitle": str(row.get(a.subtitle_col) or ""),
+            "tags": [str(t) for t in tags], "notes": str(row.get(a.notes_col) or ""),
+            "dur": dur, "peaks": pk,
+        })
+
+    store_id = hashlib.sha1((a.title + "\n" + "\n".join(c["file"] for c in clips)).encode()).hexdigest()[:12]
+    data = json.dumps(clips, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+    title = a.title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    html = (open(TEMPLATE, encoding="utf-8").read()
+            .replace("__TITLE__", title).replace("__CLIPS__", data).replace("__STORE_ID__", json.dumps(store_id)))
+    with open(os.path.join(out, "index.html"), "w", encoding="utf-8") as f:
+        f.write(html)
+
+    print(f"{len(clips)} clips -> {os.path.join(out, 'index.html')}")
+    if a.meta:
+        print(f"metadata matched for {sum(1 for c in clips if c['text'] or c['subtitle'] or c['notes'] or c['tags'])} clips")
+    for s in skipped:
+        print("skipped", s, file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
