@@ -274,8 +274,7 @@ function updateSelbar(i, row) {
   bar.dataset.state = state;
   bar.innerHTML = has
     ? `<span>Selected ${fmt(sel.b - sel.a)} (${fmt(sel.a)} → ${fmt(sel.b)})</span>
-       <button class="cut" data-act="cut">✂ Cut selection</button><button data-act="playsel">▶ Play selection</button>
-       <button data-act="dropsel">Cancel</button>`
+       <button class="cut" data-act="cut">✂ Cut selection</button>`
     : `<span>Drag across the waveform to select a part to cut out, e.g. a cough or a stray word in the middle.</span>`;
 }
 
@@ -396,8 +395,6 @@ function render() {
     row.querySelector(".selbar").addEventListener("click", ev => {
       const act = ev.target.dataset.act; if (!act) return;
       if (act === "cut") cutSelection();
-      else if (act === "playsel") playSelection();
-      else if (act === "dropsel") { sel = null; drawWave(i); }
     });
     attachWave(row, i);
     list.appendChild(row);

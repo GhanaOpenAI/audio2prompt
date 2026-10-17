@@ -100,8 +100,7 @@ python build.py path/to/clips --min-duration 2 --max-duration 15   # allowed kep
 - **Trimming the ends:** drag the orange handles on a clip's waveform. Trimmed-off parts are shaded.
 - **Cutting something out of the middle** (a cough, a stray word, a pause): drag across the waveform
   (away from the orange handles) to select it, adjust its blue edges if needed, then click
-  **✂ Cut selection** under the waveform (or press `Delete` / `C`). **▶ Play selection** lets you hear
-  exactly what you're about to cut.
+  **✂ Cut selection** under the waveform (or press `Delete` / `C`).
   Cut ranges stay visible, crossed out; click one to restore it. On export the pieces are joined with
   a 10 ms crossfade so the join doesn't click.
 - **Playback only covers what you're keeping**: it starts at the trim start, jumps over cuts and stops
