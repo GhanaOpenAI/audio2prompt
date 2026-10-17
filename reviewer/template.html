@@ -106,7 +106,7 @@
   </div>
   <div class="keys"><kbd>Space</kbd> play/pause · <kbd>G</kbd> good · <kbd>B</kbd> bad · <kbd>U</kbd> clear · <kbd>↓</kbd>/<kbd>J</kbd> next · <kbd>↑</kbd>/<kbd>K</kbd> previous · <kbd>R</kbd> replay ·
     trim ends: drag the orange handles, or <kbd>[</kbd> start / <kbd>]</kbd> end at the playhead ·
-    cut a gap: drag across the waveform to select it, then <kbd>Del</kbd>/<kbd>C</kbd> (<kbd>S</kbd> plays the selection, <kbd>Esc</kbd> drops it; click a cut to restore it) ·
+    cut out a middle part: put both markers around it, then "✂ Cut this part out" or <kbd>Del</kbd>/<kbd>C</kbd> (click a cut to restore it) ·
     <kbd>A</kbd> remove detected silences (dotted boxes) · <kbd>X</kbd> undo all trims and cuts · click the waveform to play from there</div>
 </header>
 <main id="list"></main>
@@ -122,7 +122,6 @@ const STORE = "audio-clip-reviewer:" + __STORE_ID__;  // old prefix kept so save
 const load = k => { try { return JSON.parse(localStorage.getItem(STORE + k) || "{}"); } catch (e) { return {}; } };
 let ratings = load(":ratings"), trims = load(":trims"), autoBad = load(":autobad"), cuts = load(":cuts");
 let silDone = load(":silence");  // clips whose silences were already handled automatically (so undo sticks)
-let sel = null;  // {file, a, b}: a range selected on the current clip, waiting to be cut
 const save = () => {
   try {
     localStorage.setItem(STORE + ":ratings", JSON.stringify(ratings)); localStorage.setItem(STORE + ":trims", JSON.stringify(trims));
@@ -250,12 +249,6 @@ function drawWave(i) {
     for (const [a, b] of [pd.lead, pd.tail, ...pd.cuts].filter(Boolean)) ctx.strokeRect(X(a) + .5, 1.5, X(b) - X(a) - 1, h - 3);
     ctx.restore();
   }
-  if (sel && sel.file === c.file) {  // pending selection
-    const xa = X(Math.min(sel.a, sel.b)), xb = X(Math.max(sel.a, sel.b));
-    ctx.fillStyle = css("--sel"); ctx.fillRect(xa, 0, xb - xa, h);
-    ctx.fillStyle = css("--sel-edge");
-    for (const x of [xa, xb]) { ctx.fillRect(Math.round(x) - 1, 0, 2, h); ctx.fillRect(Math.round(x) - 4, h / 2 - 6, 8, 12); }
-  }
   ctx.fillStyle = css("--accent");
   for (const x of [xs, xe]) { ctx.fillRect(Math.round(x) - 1, 0, 2, h); ctx.fillRect(Math.round(x) - 5, 0, 10, 6); ctx.fillRect(Math.round(x) - 5, h - 6, 10, 6); }
   updateSelbar(i, row);
@@ -265,17 +258,19 @@ function drawWave(i) {
 }
 function drawAll() { view.forEach((_, i) => drawWave(i)); }
 
-// The line under the active clip's waveform: a hint, or buttons for the current selection.
+// Both orange markers away from the ends = they surround a middle part.
+const markersInMiddle = c => { const [s, e] = trimOf(c); return s > 0.01 && e < c.dur - 0.01; };
+// The line under the active clip's waveform: a hint, or the "cut this part out" button.
 function updateSelbar(i, row) {
-  const bar = row.querySelector(".selbar"), c = view[i];
-  const has = sel && sel.file === c.file && i === current;
-  const state = has ? `sel:${sel.a.toFixed(3)}-${sel.b.toFixed(3)}` : "hint";
+  const bar = row.querySelector(".selbar"), c = view[i], [s, e] = trimOf(c);
+  const mid = markersInMiddle(c);
+  const state = mid ? `mid:${s}-${e}` : "hint";
   if (bar.dataset.state === state) return;
   bar.dataset.state = state;
-  bar.innerHTML = has
-    ? `<span>Selected ${fmt(sel.b - sel.a)} (${fmt(sel.a)} → ${fmt(sel.b)})</span>
-       <button class="cut" data-act="cut">✂ Cut selection</button>`
-    : `<span>Drag across the waveform to select a part to cut out, e.g. a cough or a stray word in the middle.</span>`;
+  bar.innerHTML = mid
+    ? `<span>Markers around ${fmt(e - s)} (${fmt(s)} → ${fmt(e)}): only this part is kept.</span>
+       <button class="cut" data-act="cut">✂ Cut this part out instead</button>`
+    : `<span>Drag the orange markers in from the ends to trim. Put both around a part in the middle to cut it out.</span>`;
 }
 
 function setTrim(c, s, e) {
@@ -297,13 +292,12 @@ function refreshMeta(i) {
 
 function attachWave(row, i) {
   const cv = row.querySelector("canvas");
-  let drag = null, downX = 0;  // drag: "s"/"e" trim handle, "a"/"b" selection edge, "new" selecting, "click" not moved yet
+  let drag = null;  // "s"/"e" while dragging a marker, "click" for a click on the waveform
   const rect = () => cv.getBoundingClientRect();
   const tAt = ev => { const r = rect(); return Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) * view[i].dur; };
   const near = (ev, t) => Math.abs(ev.clientX - rect().left - t / view[i].dur * rect().width) < 9;
   const hit = ev => {
     const c = view[i], [s, e] = trimOf(c);
-    if (sel && sel.file === c.file) { if (near(ev, sel.a)) return "a"; if (near(ev, sel.b)) return "b"; }
     if (near(ev, s)) return "s"; if (near(ev, e)) return "e";
     return null;
   };
@@ -312,19 +306,13 @@ function attachWave(row, i) {
     const c = view[i], h = hit(ev);
     try { cv.setPointerCapture(ev.pointerId); } catch (err) {}
     if (h) { drag = h; player.pause(); return; }
-    drag = "click"; downX = ev.clientX;
+    drag = "click";
   });
   cv.addEventListener("pointermove", ev => {
     const c = view[i], [s, e] = trimOf(c), t = tAt(ev);
     if (!drag) { const h = hit(ev); cv.style.cursor = h ? "ew-resize" : cutAt(c, t) ? "copy" : "text"; return; }
-    if (drag === "click" && Math.abs(ev.clientX - downX) > 4) {  // started dragging on the wave: new selection
-      const t0 = Math.max(s, Math.min(e, tAt({ clientX: downX })));
-      sel = { file: c.file, a: t0, b: t0 }; drag = "b"; player.pause();
-    }
     if (drag === "s" || drag === "e") {
       if (drag === "s" ? setTrim(c, t, e) : setTrim(c, s, t)) { drawWave(i); refreshMeta(i); }
-    } else if (drag === "a" || drag === "b") {
-      sel[drag] = Math.max(s, Math.min(e, t)); drawWave(i);
     }
   });
   cv.addEventListener("pointerup", ev => {
@@ -332,35 +320,28 @@ function attachWave(row, i) {
     if (was === "click") {
       const t = tAt(ev), hitCut = cutAt(c, t);
       if (hitCut) { cuts[c.file] = cutsOf(c).filter(x => x !== hitCut); if (!cuts[c.file].length) delete cuts[c.file]; refreshMeta(i); drawWave(i); toast("Cut restored"); return; }
-      if (sel && sel.file === c.file) { sel = null; drawWave(i); }
       const [s, e] = trimOf(c); playFrom(Math.max(s, Math.min(t, e - 0.05)));
     } else if (was === "s" || was === "e") {
       playFrom(trimOf(c)[0]);
-    } else if (was === "a" || was === "b") {
-      if (Math.abs(sel.b - sel.a) < 0.03) { sel = null; drawWave(i); return; }
-      const a = Math.min(sel.a, sel.b), b = Math.max(sel.a, sel.b);
-      sel = { file: c.file, a, b }; drawWave(i);
-      toast(`Selected ${fmt(b - a)}: press Delete or C to cut it, S to hear it`);
     }
   });
 }
 
-// Cut the pending selection out of the current clip (overlapping cuts are merged).
+// Turn the part between the markers into a cut (overlapping cuts are merged) and send the markers
+// back to the ends, ready for the next cut.
 function cutSelection() {
-  const c = view[current]; if (!c || !sel || sel.file !== c.file) { toast("Drag across the waveform to select a part to cut"); return; }
-  const merged = [...cutsOf(c), [sel.a, sel.b]].sort((x, y) => x[0] - y[0]).reduce((acc, [a, b]) => {
+  const c = view[current]; if (!c) return;
+  if (!markersInMiddle(c)) { toast("Put both orange markers around the part you want to cut out"); return; }
+  const [s, e] = trimOf(c);
+  cuts[c.file] = [...cutsOf(c), [s, e]].sort((x, y) => x[0] - y[0]).reduce((acc, [a, b]) => {
     const last = acc[acc.length - 1];
     if (last && a <= last[1] + 0.005) last[1] = Math.max(last[1], b); else acc.push([a, b]);
     return acc;
   }, []).map(([a, b]) => [+a.toFixed(3), +b.toFixed(3)]);
-  cuts[c.file] = merged; const len = sel.b - sel.a; sel = null;
-  refreshMeta(current); drawWave(current); toast(`Cut ${fmt(len)}: ${fmt(kept(c))} kept`);
+  delete trims[c.file];
+  refreshMeta(current); drawWave(current); toast(`Cut ${fmt(e - s)} out: ${fmt(kept(c))} kept`);
+  playCurrent();
 }
-function playSelection() {
-  const c = view[current]; if (!c || !sel || sel.file !== c.file) return;
-  playFrom(sel.a); selStop = sel.b;
-}
-let selStop = null;
 
 // ---- list ----------------------------------------------------------------
 function render() {
@@ -422,7 +403,7 @@ function highlight(scroll = true) {
   if (scroll && el) el.scrollIntoView({ block: "center", behavior: "smooth" });
 }
 function select(i) {
-  if (i !== current) { player.pause(); const old = current; current = i; if (sel) sel = null; highlight(); drawWave(old); }
+  if (i !== current) { player.pause(); const old = current; current = i; highlight(); drawWave(old); }
 }
 
 // ---- playback (always inside the trim window) ------------------------------
@@ -432,11 +413,10 @@ function playFrom(t) {
   const go = () => { player.currentTime = t; player.play().catch(err => console.warn("play failed", err)); };
   if (player.readyState >= 1) go(); else player.addEventListener("loadedmetadata", go, { once: true });
 }
-function playCurrent() { const c = view[current]; if (c) { selStop = null; playFrom(trimOf(c)[0]); } }
+function playCurrent() { const c = view[current]; if (c) playFrom(trimOf(c)[0]); }
 function toggle() {
   const c = view[current]; if (!c) return;
   const [s, e] = trimOf(c), same = player.src.endsWith(c.src);
-  selStop = null;
   if (same && !player.paused) player.pause();
   else if (same && player.currentTime > s && player.currentTime < e - 0.05) player.play();
   else playCurrent();
@@ -446,7 +426,6 @@ function stopAtTrimEnd() {
   const c = view[current];
   if (!c || !player.src.endsWith(c.src) || player.paused) return;
   const t = player.currentTime;
-  if (selStop !== null) { if (t >= selStop) { player.pause(); selStop = null; } return; }
   const inCut = cutAt(c, t);
   if (inCut) {
     if (inCut[1] >= trimOf(c)[1] - 0.01) player.pause(); else player.currentTime = inCut[1];
@@ -499,7 +478,7 @@ function silenceCurrent() {
 }
 function untrim() {
   const c = view[current]; if (!c) return;
-  delete trims[c.file]; delete cuts[c.file]; if (sel && sel.file === c.file) sel = null;
+  delete trims[c.file]; delete cuts[c.file];
   drawWave(current); refreshMeta(current);
 }
 
@@ -518,9 +497,7 @@ document.addEventListener("keydown", e => {
   else if (k === "]") trimAtPlayhead("e");
   else if (k === "x") untrim();
   else if (k === "delete" || k === "backspace" || k === "c") { e.preventDefault(); cutSelection(); }
-  else if (k === "s") playSelection();
   else if (k === "a") silenceCurrent();
-  else if (k === "escape" && sel) { sel = null; drawWave(current); }
 });
 
 document.querySelectorAll(".chip").forEach(ch => ch.onclick = () => {
@@ -530,7 +507,7 @@ document.querySelectorAll(".chip").forEach(ch => ch.onclick = () => {
 document.getElementById("showNotes").onchange = e => document.body.classList.toggle("blind", !e.target.checked);
 document.getElementById("reset").onclick = () => {
   if (confirm("Clear all your ratings, trims and cuts?")) {
-    ratings = {}; trims = {}; cuts = {}; autoBad = {}; silDone = {}; sel = null;
+    ratings = {}; trims = {}; cuts = {}; autoBad = {}; silDone = {};
     if (SIL.auto) CLIPS.forEach(removeSilences);
     CLIPS.forEach(enforce); save(); render();
   }
